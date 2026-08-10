@@ -27,9 +27,9 @@ All settings use environment variables. None are required.
 | `PORT`               | `8787`                                 | Listen port                             |
 | `POOL_SIZE`          | `2`                                    | Pre-minted hCaptcha tokens to keep warm |
 | `CHROMIUM_PATH`      | (Playwright bundled)                   | Path to Chromium binary                 |
-| `NVIDIA_MODEL_ID`    | `qc69jvmznzxy/glm-5.2`                 | NVIDIA deployment path segment          |
-| `NVIDIA_FUNCTION_ID` | `3b9748d8-1d85-40e8-8573-0eeaa63a4b63` | NVIDIA queue function ID                |
-| `MODEL`              | `z-ai/glm-5.2`                         | Model name advertised to clients        |
+| `NVIDIA_MODEL_ID`    | `qc69jvmznzxy/glm-5.2`                 | Fallback deployment path segment        |
+| `NVIDIA_FUNCTION_ID` | `3b9748d8-1d85-40e8-8573-0eeaa63a4b63` | Fallback function ID                    |
+| `MODEL`              | `z-ai/glm-5.2`                         | Fallback model name                     |
 
 ## API
 
@@ -37,11 +37,11 @@ All settings use environment variables. None are required.
 
 Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. Also accepts `enable_thinking` (defaults to `true`) to toggle the model's reasoning mode.
 
-Returns streaming or non-streaming completions in OpenAI format.
+Returns streaming or non-streaming completions in OpenAI format. `model` is routed to the matching NVIDIA deployment; an unknown model returns `404 model_not_found`.
 
 ### `GET /v1/models`
 
-Returns the model list.
+Returns the model list. On startup the proxy builds a catalog from NVIDIA's public model list plus each model's queue function ID, and serves every text-capable model (LLMs and multimodal vision-language models; embeddings, speech, image/video generation and other non-text models are excluded). If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
 
 ## How it works
 

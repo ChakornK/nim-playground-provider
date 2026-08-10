@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type ServerDeps } from "../src/server";
 import type { TokenPool } from "../src/token-pool";
 import type { UpstreamChatParams } from "../src/types";
@@ -13,14 +13,8 @@ let tokenCalls = 0;
 let chatCalls = 0;
 let lastParams: UpstreamChatParams | null = null;
 
-const deps: ServerDeps = {
-  pool: {
-    async acquire() {
-      tokenCalls++;
-      return "P1_fake_token";
-    },
-  } as unknown as TokenPool,
-  upstream: {
+const upstreamMock = () =>
+  ({
     async chat(params: UpstreamChatParams) {
       chatCalls++;
       lastParams = params;
@@ -52,7 +46,16 @@ const deps: ServerDeps = {
         headers: { "content-type": "text/event-stream" },
       });
     },
-  } as unknown as Upstream,
+  }) as unknown as Upstream;
+
+const deps: ServerDeps = {
+  pool: {
+    async acquire() {
+      tokenCalls++;
+      return "P1_fake_token";
+    },
+  } as unknown as TokenPool,
+  upstream: upstreamMock(),
   model: "z-ai/glm-5.2",
   port: 0,
 };
@@ -225,4 +228,95 @@ test("tool result messages (null content, tool_call_id) are accepted", async () 
   });
   expect(r.status).toBe(200);
   expect(lastParams?.messages).toHaveLength(3);
+});
+
+describe("with a catalog", () => {
+  const catalog = [
+    {
+      id: "z-ai/glm-5.2",
+      slug: "glm-5.2",
+      functionId: "glm-fid",
+      created: 1700000000,
+      ownedBy: "z-ai",
+    },
+    {
+      id: "thinkingmachines/inkling",
+      slug: "inkling",
+      functionId: "inkling-fid",
+      created: 1700000001,
+      ownedBy: "thinkingmachines",
+    },
+  ];
+  let catServer: ReturnType<typeof createServer>;
+  let catBase: string;
+
+  beforeAll(() => {
+    chatCalls = 0;
+    lastParams = null;
+    catServer = createServer({
+      ...deps,
+      upstream: upstreamMock(),
+      catalog,
+    });
+    catBase = `http://localhost:${catServer.port}`;
+  });
+  afterAll(() => catServer.stop(true));
+
+  test("GET /v1/models lists the catalog", async () => {
+    const r = await fetch(`${catBase}/v1/models`);
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body).toEqual({
+      object: "list",
+      data: [
+        {
+          id: "z-ai/glm-5.2",
+          object: "model",
+          created: 1700000000,
+          owned_by: "z-ai",
+        },
+        {
+          id: "thinkingmachines/inkling",
+          object: "model",
+          created: 1700000001,
+          owned_by: "thinkingmachines",
+        },
+      ],
+    });
+  });
+
+  test("unknown model returns 404 model_not_found", async () => {
+    const r = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "nope/does-not-exist",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    });
+    expect(r.status).toBe(404);
+    const body = await r.json();
+    expect(body.error.type).toBe("model_not_found");
+  });
+
+  test("routing uses the catalog model's slug and function id", async () => {
+    const before = chatCalls;
+    const r = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "thinkingmachines/inkling",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(chatCalls).toBe(before + 1);
+    expect(lastParams?.model).toBe("thinkingmachines/inkling");
+    expect(lastParams?.route).toEqual({
+      modelId: "qc69jvmznzxy/inkling",
+      functionId: "inkling-fid",
+    });
+  });
 });
