@@ -9,6 +9,14 @@ export interface ServerDeps {
   upstream: Upstream;
   model?: string;
   port?: number;
+  /** Built at startup by `buildCatalog()`. Falls back to a single default when absent. */
+  catalog?: Array<{
+    id: string;
+    slug: string;
+    functionId: string;
+    created: number;
+    ownedBy: string;
+  }>;
 }
 
 export function parseBody(raw: unknown): ChatRequest | null {
@@ -57,6 +65,9 @@ const errorJson = (
 
 export function createServer(deps: ServerDeps) {
   const model = deps.model ?? env.model;
+  const catalog = deps.catalog ?? [];
+
+  const lookup = (id: string) => catalog.find((m) => m.id === id);
 
   return Bun.serve({
     port: deps.port ?? env.port,
@@ -66,10 +77,16 @@ export function createServer(deps: ServerDeps) {
         return new Response(null, { headers: CORS });
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
-        return json(
-          { object: "list", data: [{ id: model, object: "model" }] },
-          200,
-        );
+        const data =
+          catalog.length > 0
+            ? catalog.map((m) => ({
+                id: m.id,
+                object: "model",
+                created: m.created,
+                owned_by: m.ownedBy,
+              }))
+            : [{ id: model, object: "model" }];
+        return json({ object: "list", data }, 200);
       }
 
       if (url.pathname !== "/v1/chat/completions" || req.method !== "POST") {
@@ -94,6 +111,14 @@ export function createServer(deps: ServerDeps) {
       const stream = body.stream !== false;
       const reqModel = body.model ?? model;
 
+      if (catalog.length > 0 && !lookup(reqModel)) {
+        return errorJson(
+          `model '${reqModel}' not found`,
+          404,
+          "model_not_found",
+        );
+      }
+
       let token: string;
       try {
         token = await deps.pool.acquire();
@@ -107,10 +132,15 @@ export function createServer(deps: ServerDeps) {
 
       let up: Response;
       try {
+        const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
         up = await deps.upstream.chat({
           token,
           messages: body.messages,
           model: reqModel,
+          route: {
+            modelId: entry ? `qc69jvmznzxy/${entry.slug}` : env.modelId,
+            functionId: entry?.functionId ?? env.functionId,
+          },
           temperature: body.temperature,
           topP: body.top_p,
           maxTokens: body.max_tokens,
