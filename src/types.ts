@@ -64,4 +64,6 @@ export interface UpstreamChatParams {
   enableThinking: boolean;
   stream: boolean;
   tools?: unknown[];
+  /** Overrides the constructor's fixed deployment. */
+  route?: { modelId: string; functionId: string };
 }
