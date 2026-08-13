@@ -1,7 +1,8 @@
 import { env } from "./constants";
+import { ThinkingCache } from "./thinking-cache";
 import type { TokenPool } from "./token-pool";
 import { transformStream } from "./translate";
-import type { ChatRequest } from "./types";
+import type { ChatCompletion, ChatRequest } from "./types";
 import type { Upstream } from "./upstream";
 
 export interface ServerDeps {
@@ -9,6 +10,7 @@ export interface ServerDeps {
   upstream: Upstream;
   model?: string;
   port?: number;
+  cache?: ThinkingCache;
   /** Built at startup by `buildCatalog()`. Falls back to a single default when absent. */
   catalog?: Array<{
     id: string;
@@ -66,6 +68,7 @@ const errorJson = (
 export function createServer(deps: ServerDeps) {
   const model = deps.model ?? env.model;
   const catalog = deps.catalog ?? [];
+  const cache = deps.cache ?? new ThinkingCache();
 
   const lookup = (id: string) => catalog.find((m) => m.id === id);
 
@@ -133,9 +136,10 @@ export function createServer(deps: ServerDeps) {
       let up: Response;
       try {
         const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+        const messages = cache.augment(body.messages);
         up = await deps.upstream.chat({
           token,
-          messages: body.messages,
+          messages,
           model: reqModel,
           route: {
             modelId: entry ? `qc69jvmznzxy/${entry.slug}` : env.modelId,
@@ -164,6 +168,13 @@ export function createServer(deps: ServerDeps) {
       if (!stream) {
         const completion = (await up.json()) as Record<string, unknown>;
         completion.id = `chatcmpl-${crypto.randomUUID()}`;
+        const msg = (completion as { choices?: ChatCompletion["choices"] })
+          .choices?.[0]?.message;
+        cache.remember(
+          body.messages,
+          msg?.reasoning_content ?? "",
+          msg?.content ?? "",
+        );
         return json(completion, 200);
       }
 
@@ -171,15 +182,23 @@ export function createServer(deps: ServerDeps) {
       const streamOut = new ReadableStream<Uint8Array>({
         async start(controller) {
           const enc = new TextEncoder();
+          let reasoning = "";
+          let answer = "";
           try {
             for await (const frame of transformStream(
               up.body as ReadableStream<Uint8Array>,
+              (c) => {
+                const d = c.choices?.[0]?.delta;
+                if (d?.reasoning_content) reasoning += d.reasoning_content;
+                if (d?.content) answer += d.content;
+              },
             )) {
               controller.enqueue(enc.encode(frame));
             }
           } catch {
             // upstream dropped mid-stream; close without a partial [DONE]
           } finally {
+            cache.remember(body.messages, reasoning, answer);
             try {
               controller.close();
             } catch {}

@@ -146,6 +146,61 @@ test("streaming completion passes translated SSE through and burns one token", a
   expect(lastParams?.model).toBe("z-ai/glm-5.2");
 });
 
+test("interrupted streaming thinking is re-injected into the next request", async () => {
+  await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "say hi" }],
+      stream: true,
+    }),
+  });
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [
+        { role: "user", content: "say hi" },
+        { role: "assistant", content: "Hello there" },
+        { role: "user", content: "what were you thinking?" },
+      ],
+      stream: true,
+    }),
+  });
+  expect(r.status).toBe(200);
+  expect(lastParams?.messages[1]).toEqual({
+    role: "assistant",
+    content: " thinking\nLet me think about it.\n response\nHello there",
+  });
+});
+
+test("non-streaming thinking is cached and injected into the next request", async () => {
+  await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "tell me a fact" }],
+      stream: false,
+    }),
+  });
+  await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [
+        { role: "user", content: "tell me a fact" },
+        { role: "assistant", content: "Hello there" },
+        { role: "user", content: "why?" },
+      ],
+      stream: false,
+    }),
+  });
+  expect(lastParams?.messages[1]).toEqual({
+    role: "assistant",
+    content: " thinking\nLet me think about it.\n response\nHello there",
+  });
+});
+
 test("non-streaming completion returns an aggregated chat.completion object", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",

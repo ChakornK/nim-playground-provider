@@ -10,6 +10,7 @@ import type { OpenAIChunk } from "./types";
  */
 export async function* transformStream(
   upstreamBody: ReadableStream<Uint8Array>,
+  onChunk?: (chunk: OpenAIChunk) => void,
 ): AsyncGenerator<string> {
   let held: OpenAIChunk | null = null;
 
@@ -41,6 +42,7 @@ export async function* transformStream(
       continue;
     }
     const chunk = obj as unknown as OpenAIChunk;
+    onChunk?.(chunk);
     // emit the previous frame (stripped), then hold this one
     yield* flush(false);
     held = chunk;
