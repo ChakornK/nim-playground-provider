@@ -679,13 +679,11 @@ describe("with a catalog", () => {
 
 test("server reads the catalog from a mutable provider", async () => {
   let current: CatalogEntry[] = [];
-  let chatCallsLocal = 0;
   const catServer = createServer({
     ...deps,
     getCatalog: () => current,
     upstream: {
       async chat(params: UpstreamChatParams) {
-        chatCallsLocal++;
         lastParams = params;
         return new Response(
           JSON.stringify({

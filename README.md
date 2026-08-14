@@ -25,6 +25,7 @@ All settings use environment variables. None are required.
 | Variable        | Default              | Purpose                                 |
 | --------------- | -------------------- | --------------------------------------- |
 | `PORT`          | `8787`               | Listen port                             |
+| `HOST`          | `127.0.0.1`          | Bind address (localhost by default)     |
 | `POOL_SIZE`     | `2`                  | Pre-minted hCaptcha tokens to keep warm |
 | `CHROMIUM_PATH` | (Playwright bundled) | Path to Chromium binary                 |
 | `MODEL`         | `z-ai/glm-5.2`       | Fallback model name                     |
