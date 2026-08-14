@@ -8,8 +8,8 @@ import {
   REFERER,
   UPSTREAM_BASE,
   USER_AGENT,
-} from "./constants";
-import type { CatalogEntry, ModelRoute } from "./types";
+} from "./constants.ts";
+import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 

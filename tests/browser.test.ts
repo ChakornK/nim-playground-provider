@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { withTimeout } from "../src/browser";
+import { withTimeout } from "../src/browser.ts";
 
 test("withTimeout returns the value when the promise resolves in time", async () => {
   const fast = new Promise<string>((r) => setTimeout(() => r("ok"), 5));

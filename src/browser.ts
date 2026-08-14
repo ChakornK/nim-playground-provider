@@ -6,7 +6,7 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright-core";
-import { USER_AGENT } from "./constants";
+import { USER_AGENT } from "./constants.ts";
 
 const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 const HCAPTCHA_API =

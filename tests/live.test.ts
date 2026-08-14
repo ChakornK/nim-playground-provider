@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { BrowserSession } from "../src/browser";
-import { resolveModelRoute } from "../src/catalog";
-import { env } from "../src/constants";
-import { createServer } from "../src/server";
-import { TokenPool } from "../src/token-pool";
-import { Upstream } from "../src/upstream";
+import { BrowserSession } from "../src/browser.ts";
+import { resolveModelRoute } from "../src/catalog.ts";
+import { env } from "../src/constants.ts";
+import { createServer } from "../src/server.ts";
+import { TokenPool } from "../src/token-pool.ts";
+import { Upstream } from "../src/upstream.ts";
 
 const LIVE = !!process.env.NVIDIA_LIVE;
 

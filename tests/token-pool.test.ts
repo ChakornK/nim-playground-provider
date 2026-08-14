@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { TokenPool, type TokenSource } from "../src/token-pool";
+import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 
 function fakeSource(tokens: string[]): TokenSource & { minted: number } {
   let i = 0;

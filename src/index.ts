@@ -1,10 +1,10 @@
-import { BrowserSession } from "./browser";
-import { buildCatalog, resolveModelRoute } from "./catalog";
-import { env } from "./constants";
-import { createServer } from "./server";
-import { TokenPool } from "./token-pool";
-import type { CatalogEntry, ModelRoute } from "./types";
-import { Upstream } from "./upstream";
+import { BrowserSession } from "./browser.ts";
+import { buildCatalog, resolveModelRoute } from "./catalog.ts";
+import { env } from "./constants.ts";
+import { createServer } from "./server.ts";
+import { TokenPool } from "./token-pool.ts";
+import type { CatalogEntry, ModelRoute } from "./types.ts";
+import { Upstream } from "./upstream.ts";
 
 const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 

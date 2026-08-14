@@ -1,5 +1,5 @@
-import { ORIGIN, REFERER, UPSTREAM_BASE, USER_AGENT } from "./constants";
-import type { OpenAIMessage, UpstreamChatParams } from "./types";
+import { ORIGIN, REFERER, UPSTREAM_BASE, USER_AGENT } from "./constants.ts";
+import type { OpenAIMessage, UpstreamChatParams } from "./types.ts";
 
 export function upstreamUrl(modelId: string): string {
   return `${UPSTREAM_BASE}/models/${modelId}`;

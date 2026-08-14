@@ -5,7 +5,7 @@ import {
   isTextCapable,
   resolveModelRoute,
   slugCandidates,
-} from "../src/catalog";
+} from "../src/catalog.ts";
 
 test("isTextCapable keeps LLMs and vision-language, drops non-text", () => {
   expect(isTextCapable("z-ai/glm-5.2")).toBe(true);

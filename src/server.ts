@@ -6,11 +6,11 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { env, NAMESPACE } from "./constants";
-import type { TokenPool } from "./token-pool";
-import { transformStream } from "./translate";
-import type { CatalogEntry, ChatRequest, ModelRoute } from "./types";
-import type { Upstream } from "./upstream";
+import { env, NAMESPACE } from "./constants.ts";
+import type { TokenPool } from "./token-pool.ts";
+import { transformStream } from "./translate.ts";
+import type { CatalogEntry, ChatRequest, ModelRoute } from "./types.ts";
+import type { Upstream } from "./upstream.ts";
 
 export interface ServerDeps {
   pool: TokenPool;

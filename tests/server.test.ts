@@ -5,10 +5,10 @@ import {
   createServer,
   type ServerDeps,
   type ServerInstance,
-} from "../src/server";
-import type { TokenPool } from "../src/token-pool";
-import type { CatalogEntry, UpstreamChatParams } from "../src/types";
-import type { Upstream } from "../src/upstream";
+} from "../src/server.ts";
+import type { TokenPool } from "../src/token-pool.ts";
+import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";
+import type { Upstream } from "../src/upstream.ts";
 
 const fixture = () =>
   readFileSync(join(__dirname, "fixtures", "upstream.sse"), "utf8");

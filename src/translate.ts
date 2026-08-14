@@ -1,5 +1,5 @@
-import { parseSSE } from "./sse";
-import type { OpenAIChunk } from "./types";
+import { parseSSE } from "./sse.ts";
+import type { OpenAIChunk } from "./types.ts";
 
 /**
  * Transform upstream SSE frames into OpenAI SSE.
