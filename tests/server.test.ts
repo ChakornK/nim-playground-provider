@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createServer, type ServerDeps } from "../src/server";
+import {
+  createServer,
+  type ServerDeps,
+  type ServerInstance,
+} from "../src/server";
 import type { TokenPool } from "../src/token-pool";
 import type { CatalogEntry, UpstreamChatParams } from "../src/types";
 import type { Upstream } from "../src/upstream";
@@ -61,11 +65,11 @@ const deps: ServerDeps = {
   defaultRoute: { modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fid" },
 };
 
-let server: ReturnType<typeof createServer>;
+let server: ServerInstance;
 let base: string;
 
-beforeAll(() => {
-  server = createServer(deps);
+beforeAll(async () => {
+  server = await createServer(deps);
   base = `http://localhost:${server.port}`;
 });
 afterAll(() => server.stop(true));
@@ -99,7 +103,7 @@ test("unknown route returns 404 OpenAI error", async () => {
 
 test("no route available returns 503 without consuming a token", async () => {
   let acquired = 0;
-  const noRoute = createServer({
+  const noRoute = await createServer({
     pool: {
       async acquire() {
         acquired++;
@@ -129,7 +133,7 @@ test("no route available returns 503 without consuming a token", async () => {
 });
 
 test("upstream throw maps to 502 upstream_error", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     upstream: {
       async chat() {
@@ -153,7 +157,7 @@ test("upstream throw maps to 502 upstream_error", async () => {
 });
 
 test("upstream non-OK maps to 502 with upstream status", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     upstream: {
       async chat() {
@@ -178,7 +182,7 @@ test("upstream non-OK maps to 502 with upstream status", async () => {
 });
 
 test("mint failure maps to 503 server_error", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     pool: {
       async acquire() {
@@ -357,13 +361,13 @@ describe("with a catalog", () => {
       ownedBy: "thinkingmachines",
     },
   ];
-  let catServer: ReturnType<typeof createServer>;
+  let catServer: ServerInstance;
   let catBase: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     chatCalls = 0;
     lastParams = null;
-    catServer = createServer({
+    catServer = await createServer({
       ...deps,
       upstream: upstreamMock(),
       catalog,
@@ -433,7 +437,7 @@ describe("with a catalog", () => {
 
 test("server reads the catalog from a mutable provider", async () => {
   let current: CatalogEntry[] = [];
-  const catServer = createServer({
+  const catServer = await createServer({
     ...deps,
     getCatalog: () => current,
     upstream: {

@@ -45,7 +45,7 @@ void refreshCatalog().then(() =>
   setInterval(refreshCatalog, CATALOG_REFRESH_MS),
 );
 
-const server = createServer({
+const server = await createServer({
   pool,
   upstream,
   model: env.model,

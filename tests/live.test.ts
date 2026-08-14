@@ -17,7 +17,7 @@ test.skipIf(!LIVE)(
     const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,
@@ -54,7 +54,7 @@ test.skipIf(!LIVE)(
     const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,
@@ -113,7 +113,7 @@ test.skipIf(!LIVE)(
     const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,

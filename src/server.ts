@@ -1,3 +1,11 @@
+import {
+  createServer as httpCreate,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { env, NAMESPACE } from "./constants";
 import type { TokenPool } from "./token-pool";
 import { transformStream } from "./translate";
@@ -16,6 +24,13 @@ export interface ServerDeps {
   getCatalog?: () => CatalogEntry[];
   /** Dynamically resolved fallback deploy route for the default model, used when the catalog is empty. */
   defaultRoute?: ModelRoute;
+}
+
+export interface ServerInstance {
+  port: number;
+  hostname: string;
+  stop: (closeActiveConnections?: boolean) => Promise<void>;
+  url: string;
 }
 
 function parseBody(raw: unknown): ChatRequest | null {
@@ -54,17 +69,60 @@ const errorJson = (
   type = "invalid_request_error",
 ) => json({ error: { message, type, code: type } }, status);
 
-export function createServer(deps: ServerDeps) {
+/** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
+function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    req.setTimeout(0);
+    const url = `http://${req.headers.host ?? "localhost"}${req.url}`;
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(",") : v);
+    }
+    let body: string | null = null;
+    if (
+      req.method !== "GET" &&
+      req.method !== "HEAD" &&
+      req.method !== "OPTIONS"
+    ) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      body = Buffer.concat(chunks).toString();
+    }
+    try {
+      const response = await fetchHandler(
+        new Request(url, { method: req.method, headers, body }),
+      );
+      const headerObj: Record<string, string> = {};
+      response.headers.forEach((v, k) => {
+        headerObj[k] = v;
+      });
+      res.writeHead(response.status, headerObj);
+      if (response.body) {
+        // DOM and node:stream/web define separate ReadableStream types; at
+        // runtime they're the same Web Streams object.
+        Readable.fromWeb(response.body as never).pipe(res);
+      } else {
+        res.end();
+      }
+    } catch {
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({ error: { message: "internal server error" } }),
+        );
+      }
+    }
+  };
+}
+
+export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const model = deps.model ?? env.model;
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
 
   const lookup = (id: string) => getCatalog().find((m) => m.id === id);
 
-  const handleFetch = async (
-    req: Request,
-    server: ReturnType<typeof Bun.serve>,
-  ) => {
+  const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") return new Response(null, { status: 204 });
 
@@ -85,8 +143,6 @@ export function createServer(deps: ServerDeps) {
     if (url.pathname !== "/v1/chat/completions" || req.method !== "POST") {
       return errorJson("Not found", 404, "not_found");
     }
-
-    server.timeout(req, 0);
 
     const body = parseBody(await req.text());
     if (!body) {
@@ -199,32 +255,44 @@ export function createServer(deps: ServerDeps) {
   // Resolve a concrete port once so both loopback listeners share it.
   let resolvedPort = port;
   if (port === 0) {
-    const host0 = hosts[0] as string;
-    const probe = Bun.serve({
-      port: 0,
-      hostname: host0,
-      fetch: () => new Response(null, { status: 204 }),
+    const probe = httpCreate((_, res) => res.end());
+    await new Promise<void>((resolve, reject) => {
+      probe.on("error", reject);
+      probe.listen(0, hosts[0], () => resolve());
     });
-    resolvedPort = probe.port as number;
-    probe.stop(true);
+    resolvedPort = (probe.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
   }
 
-  const servers = hosts.map((hostname) =>
-    Bun.serve({
-      port: resolvedPort,
-      hostname,
-      fetch: handleFetch,
-    }),
+  const handler = httpHandler(handleFetch);
+  const servers = await Promise.all(
+    hosts.map(
+      (hostname) =>
+        new Promise<Server>((resolve, reject) => {
+          const s = httpCreate(handler);
+          s.on("error", (err) => {
+            s.close();
+            reject(err);
+          });
+          s.listen(resolvedPort, hostname, () => resolve(s));
+        }),
+    ),
   );
 
-  const primary = servers[0] as (typeof servers)[number];
+  const primary = servers[0] as Server;
+  const primaryAddr = primary.address() as AddressInfo;
+
   return {
-    port: primary.port,
-    hostname: primary.hostname,
+    port: primaryAddr.port,
+    hostname: hosts[0] as string,
+    url: `http://${hosts[0]}:${primaryAddr.port}`,
     stop: async (closeActiveConnections?: boolean) => {
-      for (const s of servers) await s.stop(closeActiveConnections);
+      await Promise.all(
+        servers.map((s) => {
+          if (closeActiveConnections) s.closeAllConnections();
+          return new Promise<void>((resolve) => s.close(() => resolve()));
+        }),
+      );
     },
-    url: primary.url,
-    fetch: primary.fetch,
   };
 }
