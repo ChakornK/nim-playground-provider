@@ -6,7 +6,6 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright-core";
-import { BunCDPTransport } from "./cdp-transport";
 import { USER_AGENT } from "./constants";
 
 const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
@@ -143,14 +142,7 @@ export class BrowserSession {
     }
     if (!ready) throw new Error("lightpanda CDP endpoint not ready");
 
-    // Fetch the ws URL, then connect via Bun's native WebSocket wrapped as a
-    // Playwright transport (playwright-core's built-in `ws` transport hangs
-    // under Bun).
-    const ver = (await (
-      await fetch(`http://127.0.0.1:${cdpPort}/json/version`)
-    ).json()) as { webSocketDebuggerUrl: string };
-    const transport = await BunCDPTransport.connect(ver.webSocketDebuggerUrl);
-    this.browser = await chromium.connectOverCDP(transport, {});
+    this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     this.context = await this.browser.newContext({ userAgent: USER_AGENT });
     this.page = await this.context.newPage();
     await this.page.goto(BLANK_ORIGIN, {
