@@ -123,7 +123,7 @@ export class BrowserSession {
         "--log-level",
         "error",
       ],
-      { stdio: ["ignore", "inherit", "inherit"] },
+      { stdio: "ignore" },
     );
 
     // Wait for the CDP endpoint before connecting.
