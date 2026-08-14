@@ -22,14 +22,15 @@ curl http://localhost:8787/v1/chat/completions \
 
 All settings use environment variables. None are required.
 
-| Variable             | Default                                | Purpose                                 |
-| -------------------- | -------------------------------------- | --------------------------------------- |
-| `PORT`               | `8787`                                 | Listen port                             |
-| `POOL_SIZE`          | `2`                                    | Pre-minted hCaptcha tokens to keep warm |
-| `CHROMIUM_PATH`      | (Playwright bundled)                   | Path to Chromium binary                 |
-| `NVIDIA_MODEL_ID`    | `qc69jvmznzxy/glm-5.2`                 | Fallback deployment path segment        |
-| `NVIDIA_FUNCTION_ID` | `3b9748d8-1d85-40e8-8573-0eeaa63a4b63` | Fallback function ID                    |
-| `MODEL`              | `z-ai/glm-5.2`                         | Fallback model name                     |
+| Variable              | Default                                | Purpose                                      |
+| --------------------- | -------------------------------------- | -------------------------------------------- |
+| `PORT`                | `8787`                                 | Listen port                                  |
+| `POOL_SIZE`           | `2`                                    | Pre-minted hCaptcha tokens to keep warm      |
+| `CHROMIUM_PATH`       | (Playwright bundled)                   | Path to Chromium binary                      |
+| `NVIDIA_MODEL_ID`     | `qc69jvmznzxy/glm-5.2`                 | Fallback deployment path segment             |
+| `NVIDIA_FUNCTION_ID`  | `3b9748d8-1d85-40e8-8573-0eeaa63a4b63` | Fallback function ID                         |
+| `MODEL`               | `z-ai/glm-5.2`                         | Fallback model name                          |
+| `THINKING_CACHE_FILE` | `.thinking-cache.json`                 | Persisted thinking cache (survives restarts) |
 
 ## API
 

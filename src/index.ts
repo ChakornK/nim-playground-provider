@@ -2,6 +2,7 @@ import { BrowserSession } from "./browser";
 import { buildCatalog } from "./catalog";
 import { env } from "./constants";
 import { createServer } from "./server";
+import { ThinkingCache } from "./thinking-cache";
 import { TokenPool } from "./token-pool";
 import { Upstream } from "./upstream";
 
@@ -26,13 +27,21 @@ try {
   );
 }
 
-const server = createServer({ pool, upstream, model: env.model, catalog });
+const cache = new ThinkingCache(env.thinkingCacheFile);
+const server = createServer({
+  pool,
+  upstream,
+  model: env.model,
+  catalog,
+  cache,
+});
 
 console.log(
-  `nim-playground-provider listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
+  `nim-playground-provider listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model}, thinking-cache=${env.thinkingCacheFile})`,
 );
 
 const stop = async () => {
+  cache.flush();
   await server.stop(true);
   await session.close();
   process.exit(0);

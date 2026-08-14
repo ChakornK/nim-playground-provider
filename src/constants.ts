@@ -25,6 +25,7 @@ export const env = {
   modelId: process.env.NVIDIA_MODEL_ID ?? DEFAULT_MODEL_ID,
   functionId: process.env.NVIDIA_FUNCTION_ID ?? DEFAULT_FUNCTION_ID,
   model: process.env.MODEL ?? DEFAULT_MODEL,
+  thinkingCacheFile: process.env.THINKING_CACHE_FILE ?? ".thinking-cache.json",
 };
 
 export function upstreamUrl(modelId: string): string {

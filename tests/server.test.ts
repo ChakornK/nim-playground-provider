@@ -345,6 +345,23 @@ describe("thinking persistence", () => {
     });
   });
 
+  test("interrupted thinking is injected even when the client drops the reply", async () => {
+    onChat = (i) => (i === 0 ? abortedStream() : chatCompletion());
+    await post([{ role: "user", content: "interrupt me" }], { stream: true });
+    await post(
+      [
+        { role: "user", content: "interrupt me" },
+        // client got no answer and dropped the interrupted assistant message
+        { role: "user", content: "what were you thinking?" },
+      ],
+      { stream: false },
+    );
+    expect(seen[1]?.messages[1]).toEqual({
+      role: "assistant",
+      content: " thinking\nwait, hold on\n response\n",
+    });
+  });
+
   test("non-streaming thinking is injected into the follow-up request", async () => {
     onChat = () => chatCompletion();
     await post([{ role: "user", content: "tell me a fact" }], {

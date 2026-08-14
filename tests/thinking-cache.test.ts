@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { ThinkingCache } from "../src/thinking-cache";
 import type { OpenAIMessage } from "../src/types";
@@ -76,6 +79,98 @@ describe("ThinkingCache", () => {
   test("ignores turns with empty reasoning", () => {
     const cache = new ThinkingCache();
     cache.remember([{ role: "user", content: "q" }], "  ", "a");
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "x" },
+    ];
+    expect(cache.augment(messages)).toEqual(messages);
+  });
+
+  test("inserts a synthetic assistant turn when the interrupted reply was dropped", () => {
+    const cache = new ThinkingCache();
+    cache.remember(
+      [{ role: "user", content: "interrupt me" }],
+      "wait, hold on",
+      "",
+    );
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "interrupt me" },
+      { role: "user", content: "what were you thinking?" },
+    ];
+    expect(cache.augment(messages)).toEqual([
+      { role: "user", content: "interrupt me" },
+      {
+        role: "assistant",
+        content: " thinking\nwait, hold on\n response\n",
+      },
+      { role: "user", content: "what were you thinking?" },
+    ]);
+  });
+
+  test("inserts dropped-turn thinking mid-conversation and augments other turns", () => {
+    const cache = new ThinkingCache();
+    cache.remember([{ role: "user", content: "u1" }], "r1", "a1");
+    cache.remember(
+      [
+        { role: "user", content: "u1" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "u2" },
+      ],
+      "r2",
+      "a2",
+    );
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "user", content: "u3" },
+    ];
+    expect(cache.augment(messages)).toEqual([
+      { role: "user", content: "u1" },
+      {
+        role: "assistant",
+        content: " thinking\nr1\n response\na1",
+      },
+      { role: "user", content: "u2" },
+      {
+        role: "assistant",
+        content: " thinking\nr2\n response\na2",
+      },
+      { role: "user", content: "u3" },
+    ]);
+  });
+
+  test("does not insert a synthetic turn when the drop has no cached thinking", () => {
+    const cache = new ThinkingCache();
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "u1" },
+      { role: "user", content: "u2" },
+    ];
+    expect(cache.augment(messages)).toEqual(messages);
+  });
+
+  test("persists cached turns to disk and reloads them", () => {
+    const dir = mkdtempSync(join(tmpdir(), "thinking-cache-"));
+    const file = join(dir, "cache.json");
+    try {
+      const cache = new ThinkingCache(file);
+      cache.remember([{ role: "user", content: "q" }], "r", "a");
+      cache.flush();
+      const restored = new ThinkingCache(file);
+      const messages: OpenAIMessage[] = [
+        { role: "user", content: "q" },
+        { role: "assistant", content: "x" },
+      ];
+      expect(restored.augment(messages)[1]?.content).toBe(
+        " thinking\nr\n response\nx",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("starts empty when the persistence file is unreadable", () => {
+    const cache = new ThinkingCache("/nonexistent/cache.json");
     const messages: OpenAIMessage[] = [
       { role: "user", content: "q" },
       { role: "assistant", content: "x" },
