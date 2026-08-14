@@ -246,53 +246,23 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   };
 
   const port = deps.port ?? env.port;
-  const hosts = deps.host
-    ? [deps.host]
-    : env.host === "127.0.0.1"
-      ? ["127.0.0.1", "::1"]
-      : [env.host];
-
-  // Resolve a concrete port once so both loopback listeners share it.
-  let resolvedPort = port;
-  if (port === 0) {
-    const probe = httpCreate((_, res) => res.end());
-    await new Promise<void>((resolve, reject) => {
-      probe.on("error", reject);
-      probe.listen(0, hosts[0], () => resolve());
-    });
-    resolvedPort = (probe.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-  }
+  const hostname = deps.host ?? env.host;
 
   const handler = httpHandler(handleFetch);
-  const servers = await Promise.all(
-    hosts.map(
-      (hostname) =>
-        new Promise<Server>((resolve, reject) => {
-          const s = httpCreate(handler);
-          s.on("error", (err) => {
-            s.close();
-            reject(err);
-          });
-          s.listen(resolvedPort, hostname, () => resolve(s));
-        }),
-    ),
-  );
-
-  const primary = servers[0] as Server;
-  const primaryAddr = primary.address() as AddressInfo;
+  const server = await new Promise<Server>((resolve, reject) => {
+    const s = httpCreate(handler);
+    s.on("error", reject);
+    s.listen(port, hostname, () => resolve(s));
+  });
+  const addr = server.address() as AddressInfo;
 
   return {
-    port: primaryAddr.port,
-    hostname: hosts[0] as string,
-    url: `http://${hosts[0]}:${primaryAddr.port}`,
+    port: addr.port,
+    hostname,
+    url: `http://${hostname}:${addr.port}`,
     stop: async (closeActiveConnections?: boolean) => {
-      await Promise.all(
-        servers.map((s) => {
-          if (closeActiveConnections) s.closeAllConnections();
-          return new Promise<void>((resolve) => s.close(() => resolve()));
-        }),
-      );
+      if (closeActiveConnections) server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }
