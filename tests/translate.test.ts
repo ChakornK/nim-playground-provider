@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { parseSSE } from "../src/sse";
 import { transformStream } from "../src/translate";
 import { buildUpstreamBody } from "../src/upstream";

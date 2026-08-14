@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { withTimeout } from "../src/browser";
 
 test("withTimeout returns the value when the promise resolves in time", async () => {

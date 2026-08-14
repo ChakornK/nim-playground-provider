@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { BrowserSession } from "../src/browser";
 import { resolveModelRoute } from "../src/catalog";
 import { env } from "../src/constants";

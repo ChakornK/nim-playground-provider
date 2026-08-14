@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { TokenPool, type TokenSource } from "../src/token-pool";
 
 function fakeSource(tokens: string[]): TokenSource & { minted: number } {

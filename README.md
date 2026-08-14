@@ -5,10 +5,10 @@ A proxy that turns NVIDIA's free inference playground into an OpenAI-compatible 
 ## Quick start
 
 ```bash
-bun install
+npm install
 # download the lightpanda nightly binary and point the proxy at it
 curl -sL -o lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && chmod +x lightpanda
-LIGHTPANDA_PATH=./lightpanda bun start
+LIGHTPANDA_PATH=./lightpanda npm start
 ```
 
 The server listens on `http://localhost:8787`.
@@ -50,6 +50,6 @@ NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This pro
 ## Tests
 
 ```bash
-bun test                    # unit + offline integration
-NVIDIA_LIVE=1 bun test      # live smoke tests
+npm test                    # unit + offline integration
+NVIDIA_LIVE=1 npm test      # live smoke tests
 ```
