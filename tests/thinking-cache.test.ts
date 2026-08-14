@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { ThinkingCache } from "../src/thinking-cache";
 import type { OpenAIMessage } from "../src/types";
@@ -145,35 +142,6 @@ describe("ThinkingCache", () => {
     const messages: OpenAIMessage[] = [
       { role: "user", content: "u1" },
       { role: "user", content: "u2" },
-    ];
-    expect(cache.augment(messages)).toEqual(messages);
-  });
-
-  test("persists cached turns to disk and reloads them", () => {
-    const dir = mkdtempSync(join(tmpdir(), "thinking-cache-"));
-    const file = join(dir, "cache.json");
-    try {
-      const cache = new ThinkingCache(file);
-      cache.remember([{ role: "user", content: "q" }], "r", "a");
-      cache.flush();
-      const restored = new ThinkingCache(file);
-      const messages: OpenAIMessage[] = [
-        { role: "user", content: "q" },
-        { role: "assistant", content: "x" },
-      ];
-      expect(restored.augment(messages)[1]?.content).toBe(
-        " thinking\nr\n response\nx",
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("starts empty when the persistence file is unreadable", () => {
-    const cache = new ThinkingCache("/nonexistent/cache.json");
-    const messages: OpenAIMessage[] = [
-      { role: "user", content: "q" },
-      { role: "assistant", content: "x" },
     ];
     expect(cache.augment(messages)).toEqual(messages);
   });

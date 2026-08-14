@@ -22,13 +22,12 @@ curl http://localhost:8787/v1/chat/completions \
 
 All settings use environment variables. None are required.
 
-| Variable              | Default                | Purpose                                      |
-| --------------------- | ---------------------- | -------------------------------------------- |
-| `PORT`                | `8787`                 | Listen port                                  |
-| `POOL_SIZE`           | `2`                    | Pre-minted hCaptcha tokens to keep warm      |
-| `CHROMIUM_PATH`       | (Playwright bundled)   | Path to Chromium binary                      |
-| `MODEL`               | `z-ai/glm-5.2`         | Fallback model name                          |
-| `THINKING_CACHE_FILE` | `.thinking-cache.json` | Persisted thinking cache (survives restarts) |
+| Variable        | Default              | Purpose                                 |
+| --------------- | -------------------- | --------------------------------------- |
+| `PORT`          | `8787`               | Listen port                             |
+| `POOL_SIZE`     | `2`                  | Pre-minted hCaptcha tokens to keep warm |
+| `CHROMIUM_PATH` | (Playwright bundled) | Path to Chromium binary                 |
+| `MODEL`         | `z-ai/glm-5.2`       | Fallback model name                     |
 
 ## API
 

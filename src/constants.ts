@@ -22,7 +22,6 @@ export const env = {
   poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
   chromiumPath: process.env.CHROMIUM_PATH,
   model: process.env.MODEL ?? DEFAULT_MODEL,
-  thinkingCacheFile: process.env.THINKING_CACHE_FILE ?? ".thinking-cache.json",
 };
 
 export function upstreamUrl(modelId: string): string {

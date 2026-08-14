@@ -37,7 +37,7 @@ if (catalog.length === 0) {
   }
 }
 
-const cache = new ThinkingCache(env.thinkingCacheFile);
+const cache = new ThinkingCache();
 const server = createServer({
   pool,
   upstream,
@@ -48,11 +48,10 @@ const server = createServer({
 });
 
 console.log(
-  `nim-playground-provider listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model}, thinking-cache=${env.thinkingCacheFile})`,
+  `nim-playground-provider listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
 );
 
 const stop = async () => {
-  cache.flush();
   await server.stop(true);
   await session.close();
   process.exit(0);

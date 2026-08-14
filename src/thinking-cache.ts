@@ -1,4 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import type { OpenAIMessage } from "./types";
 
 interface CachedTurn {
@@ -14,30 +13,12 @@ const format = (turn: CachedTurn, answer: string) =>
 /**
  * Remembers the thinking (reasoning_content) produced for each turn, keyed by
  * the message context that preceded it, and re-injects it into later requests
- * as ` thinking ...\n response ...` so the model keeps its reasoning even when
- * the client dropped it or the turn was interrupted.
+ * as ` thinking ...\n response ...` so the model keeps its reasoning across
+ * messages. In-memory only: reasoning does not need to survive a restart.
  */
 export class ThinkingCache {
   private turns = new Map<string, CachedTurn>();
   private order: string[] = [];
-  private file?: string;
-  private saveTimer?: ReturnType<typeof setTimeout>;
-
-  constructor(file?: string) {
-    this.file = file;
-    if (file) {
-      try {
-        const raw = JSON.parse(readFileSync(file, "utf8")) as {
-          order: string[];
-          turns: Record<string, CachedTurn>;
-        };
-        this.order = raw.order ?? [];
-        this.turns = new Map(Object.entries(raw.turns ?? {}));
-      } catch {
-        // missing or unreadable file starts empty; best-effort persistence
-      }
-    }
-  }
 
   private static key(messages: OpenAIMessage[]): string {
     return JSON.stringify(messages.map((m) => [m.role, m.content ?? ""]));
@@ -54,7 +35,6 @@ export class ThinkingCache {
       const oldest = this.order.shift();
       if (oldest) this.turns.delete(oldest);
     }
-    this.scheduleSave();
   }
 
   /**
@@ -80,29 +60,5 @@ export class ThinkingCache {
       out.push(m);
     });
     return out;
-  }
-
-  /** Write cached turns to disk synchronously; also clears the pending save. */
-  flush() {
-    if (!this.file) return;
-    clearTimeout(this.saveTimer);
-    try {
-      writeFileSync(
-        this.file,
-        JSON.stringify({
-          order: this.order,
-          turns: Object.fromEntries(this.turns),
-        }),
-      );
-    } catch {
-      // best-effort; a failed write should not break requests
-    }
-  }
-
-  private scheduleSave() {
-    if (!this.file) return;
-    clearTimeout(this.saveTimer);
-    // ponytail: debounced full-file write; a per-entry log is overkill here
-    this.saveTimer = setTimeout(() => this.flush(), 500);
   }
 }
