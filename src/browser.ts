@@ -45,12 +45,11 @@ export class BrowserSession {
   private context: BrowserContext | null = null;
   private proc: ChildProcess | null = null;
   private minting: Promise<string> | null = null;
+  private opts: { lightpandaPath?: string };
 
-  constructor(
-    private opts: {
-      lightpandaPath?: string;
-    } = {},
-  ) {}
+  constructor(opts: { lightpandaPath?: string } = {}) {
+    this.opts = opts;
+  }
 
   /** Mint one fresh single-use hCaptcha token. Serialized; never reused. */
   async mintToken(): Promise<string> {
