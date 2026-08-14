@@ -357,12 +357,21 @@ describe("thinking persistence", () => {
 
   const post = (
     messages: Array<{ role: string; content: string | null }>,
-    opts?: { stream?: boolean },
+    opts?: { stream?: boolean; enable_thinking?: boolean; session_id?: string },
   ) =>
     fetch(`${tBase}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages, stream: opts?.stream ?? true }),
+      body: JSON.stringify({
+        messages,
+        stream: opts?.stream ?? true,
+        ...(opts?.enable_thinking !== undefined
+          ? { enable_thinking: opts.enable_thinking }
+          : {}),
+        ...(opts?.session_id !== undefined
+          ? { session_id: opts.session_id }
+          : {}),
+      }),
     });
 
   test("partial thinking survives a stream aborted before [DONE]", async () => {
@@ -415,6 +424,43 @@ describe("thinking persistence", () => {
     expect(seen[1]?.messages[1]).toEqual({
       role: "assistant",
       content: " thinking\nLet me think about it.\n response\nHello there",
+    });
+  });
+
+  test("enable_thinking=false skips reasoning injection on the follow-up", async () => {
+    onChat = () => chatCompletion();
+    await post([{ role: "user", content: "seed" }], { stream: false });
+    await post(
+      [
+        { role: "user", content: "seed" },
+        { role: "assistant", content: "Hello there" },
+        { role: "user", content: "why?" },
+      ],
+      { stream: false, enable_thinking: false },
+    );
+    expect(seen[1]?.messages[1]).toEqual({
+      role: "assistant",
+      content: "Hello there",
+    });
+  });
+
+  test("session_id namespaces reasoning across conversations", async () => {
+    onChat = () => chatCompletion();
+    await post([{ role: "user", content: "seed" }], {
+      stream: false,
+      session_id: "sess-a",
+    });
+    await post(
+      [
+        { role: "user", content: "seed" },
+        { role: "assistant", content: "Hello there" },
+        { role: "user", content: "why?" },
+      ],
+      { stream: false, session_id: "sess-b" },
+    );
+    expect(seen[1]?.messages[1]).toEqual({
+      role: "assistant",
+      content: "Hello there",
     });
   });
 

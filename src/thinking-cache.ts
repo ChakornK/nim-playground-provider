@@ -1,32 +1,45 @@
 import type { OpenAIMessage } from "./types";
+import { formatThinking } from "./upstream";
 
 interface CachedTurn {
   reasoning: string;
   answer: string;
 }
 
-const MAX_TURNS = 200;
+export interface AugmentOpts {
+  /** When false, no cached reasoning is injected. */
+  enabled?: boolean;
+  /** Scopes keys per conversation so reasoning cannot leak across sessions. */
+  sessionId?: string;
+}
 
-const format = (turn: CachedTurn, answer: string) =>
-  ` thinking\n${turn.reasoning}\n response\n${answer || turn.answer}`;
+const MAX_TURNS = 200;
 
 /**
  * Remembers the thinking (reasoning_content) produced for each turn, keyed by
  * the message context that preceded it, and re-injects it into later requests
- * as ` thinking ...\n response ...` so the model keeps its reasoning across
- * messages. In-memory only: reasoning does not need to survive a restart.
+ * so the model keeps its reasoning across messages. In-memory only: reasoning
+ * does not need to survive a restart.
  */
 export class ThinkingCache {
   private turns = new Map<string, CachedTurn>();
   private order: string[] = [];
 
-  private static key(messages: OpenAIMessage[]): string {
-    return JSON.stringify(messages.map((m) => [m.role, m.content ?? ""]));
+  private static key(messages: OpenAIMessage[], sessionId?: string): string {
+    const prefix = sessionId ? `${sessionId}\u0000` : "";
+    return (
+      prefix + JSON.stringify(messages.map((m) => [m.role, m.content ?? ""]))
+    );
   }
 
-  remember(messages: OpenAIMessage[], reasoning: string, answer: string) {
+  remember(
+    messages: OpenAIMessage[],
+    reasoning: string,
+    answer: string,
+    sessionId?: string,
+  ) {
     if (!reasoning.trim()) return;
-    const key = ThinkingCache.key(messages);
+    const key = ThinkingCache.key(messages, sessionId);
     this.turns.set(key, { reasoning, answer });
     this.order = this.order.filter((k) => k !== key);
     this.order.push(key);
@@ -42,19 +55,38 @@ export class ThinkingCache {
    * and insert a synthetic assistant turn when the client dropped an
    * interrupted reply entirely (consecutive user messages).
    */
-  augment(messages: OpenAIMessage[]): OpenAIMessage[] {
+  augment(messages: OpenAIMessage[], opts: AugmentOpts = {}): OpenAIMessage[] {
+    if (opts.enabled === false) return messages;
+    const sessionId = opts.sessionId;
     const out: OpenAIMessage[] = [];
     messages.forEach((m, i) => {
       if (m.role === "assistant") {
-        const turn = this.turns.get(ThinkingCache.key(messages.slice(0, i)));
-        out.push(turn ? { ...m, content: format(turn, m.content ?? "") } : m);
+        const turn = this.turns.get(
+          ThinkingCache.key(messages.slice(0, i), sessionId),
+        );
+        out.push(
+          turn
+            ? {
+                ...m,
+                content: formatThinking(
+                  turn.reasoning,
+                  m.content || turn.answer,
+                ),
+              }
+            : m,
+        );
         return;
       }
       if (i > 0 && messages[i - 1]?.role === "user") {
         // The reply that separated these two user messages was dropped.
-        const turn = this.turns.get(ThinkingCache.key(messages.slice(0, i)));
+        const turn = this.turns.get(
+          ThinkingCache.key(messages.slice(0, i), sessionId),
+        );
         if (turn) {
-          out.push({ role: "assistant", content: format(turn, turn.answer) });
+          out.push({
+            role: "assistant",
+            content: formatThinking(turn.reasoning, turn.answer),
+          });
         }
       }
       out.push(m);

@@ -149,7 +149,10 @@ export function createServer(deps: ServerDeps) {
 
       let up: Response;
       try {
-        const messages = cache.augment(body.messages);
+        const messages = cache.augment(body.messages, {
+          enabled: body.enable_thinking !== false,
+          sessionId: body.session_id,
+        });
         up = await deps.upstream.chat({
           token,
           messages,
@@ -184,6 +187,7 @@ export function createServer(deps: ServerDeps) {
           body.messages,
           msg?.reasoning_content ?? "",
           msg?.content ?? "",
+          body.session_id,
         );
         return json(completion, 200);
       }
@@ -208,7 +212,7 @@ export function createServer(deps: ServerDeps) {
           } catch {
             // upstream dropped mid-stream; close without a partial [DONE]
           } finally {
-            cache.remember(body.messages, reasoning, answer);
+            cache.remember(body.messages, reasoning, answer, body.session_id);
             try {
               controller.close();
             } catch {}

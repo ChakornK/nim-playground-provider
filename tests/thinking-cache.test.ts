@@ -145,4 +145,28 @@ describe("ThinkingCache", () => {
     ];
     expect(cache.augment(messages)).toEqual(messages);
   });
+
+  test("does not inject when disabled", () => {
+    const cache = new ThinkingCache();
+    cache.remember([{ role: "user", content: "hello" }], "r", "a");
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ];
+    expect(cache.augment(messages, { enabled: false })).toEqual(messages);
+  });
+
+  test("keys are namespaced per session", () => {
+    const cache = new ThinkingCache();
+    cache.remember([{ role: "user", content: "hello" }], "r", "a", "sess-a");
+    const messages: OpenAIMessage[] = [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ];
+    // another session with the same prefix does not inherit the reasoning
+    expect(cache.augment(messages, { sessionId: "sess-b" })).toEqual(messages);
+    expect(cache.augment(messages, { sessionId: "sess-a" })[1]?.content).toBe(
+      " thinking\nr\n response\nhi",
+    );
+  });
 });
