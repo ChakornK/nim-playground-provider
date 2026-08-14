@@ -77,6 +77,10 @@ beforeAll(() => {
 });
 afterAll(() => server.stop(true));
 
+test("server binds loopback by default", () => {
+  expect(server.hostname).toBe("127.0.0.1");
+});
+
 test("GET /v1/models advertises the model", async () => {
   const r = await fetch(`${base}/v1/models`);
   expect(r.status).toBe(200);
@@ -87,10 +91,10 @@ test("GET /v1/models advertises the model", async () => {
   });
 });
 
-test("OPTIONS is answered with CORS headers", async () => {
+test("OPTIONS is answered without CORS headers", async () => {
   const r = await fetch(`${base}/v1/models`, { method: "OPTIONS" });
-  expect(r.status).toBe(200);
-  expect(r.headers.get("access-control-allow-origin")).toBe("*");
+  expect(r.status).toBe(204);
+  expect(r.headers.get("access-control-allow-origin")).toBeNull();
 });
 
 test("unknown route returns 404 OpenAI error", async () => {

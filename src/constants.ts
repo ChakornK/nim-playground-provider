@@ -22,6 +22,7 @@ export const env = {
   poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
   chromiumPath: process.env.CHROMIUM_PATH,
   model: process.env.MODEL ?? DEFAULT_MODEL,
+  host: process.env.HOST ?? "127.0.0.1",
 };
 
 export function upstreamUrl(modelId: string): string {

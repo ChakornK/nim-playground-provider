@@ -10,6 +10,7 @@ export interface ServerDeps {
   upstream: Upstream;
   model?: string;
   port?: number;
+  host?: string;
   cache?: ThinkingCache;
   /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
   catalog?: Array<{
@@ -41,24 +42,16 @@ export function parseBody(raw: unknown): ChatRequest | null {
   }
 }
 
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-headers":
-    "content-type, authorization, openai-organization, openai-project",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
-};
-
 const SSE_HEADERS = {
   "content-type": "text/event-stream",
   "cache-control": "no-cache",
   "x-accel-buffering": "no",
-  ...CORS,
 };
 
 const json = (obj: unknown, status: number) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json", ...CORS },
+    headers: { "content-type": "application/json" },
   });
 
 const errorJson = (
@@ -76,10 +69,10 @@ export function createServer(deps: ServerDeps) {
 
   return Bun.serve({
     port: deps.port ?? env.port,
+    hostname: deps.host ?? env.host,
     async fetch(req, server) {
       const url = new URL(req.url);
-      if (req.method === "OPTIONS")
-        return new Response(null, { headers: CORS });
+      if (req.method === "OPTIONS") return new Response(null, { status: 204 });
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
         const data =
