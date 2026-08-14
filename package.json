@@ -8,7 +8,8 @@
     "format": "prettier --write .",
     "lint": "biome lint --write .",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "bun run lint && bun run typecheck && bun test"
   },
   "dependencies": {
     "playwright-core": "^1.62.1"
