@@ -104,6 +104,37 @@ test("unknown route returns 404 OpenAI error", async () => {
   expect(body.error.type).toBe("not_found");
 });
 
+test("no route available returns 503 without consuming a token", async () => {
+  let acquired = 0;
+  const noRoute = createServer({
+    pool: {
+      async acquire() {
+        acquired++;
+        return "P1_unused";
+      },
+    } as unknown as TokenPool,
+    upstream: upstreamMock(),
+    model: "z-ai/glm-5.2",
+    port: 0,
+  });
+  try {
+    const r = await fetch(
+      `http://localhost:${noRoute.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      },
+    );
+    expect(r.status).toBe(503);
+    const body = await r.json();
+    expect(body.error.type).toBe("server_error");
+    expect(acquired).toBe(0);
+  } finally {
+    await noRoute.stop(true);
+  }
+});
+
 test("POST /v1/chat/completions with empty messages returns 400", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",

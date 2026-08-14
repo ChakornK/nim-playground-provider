@@ -117,6 +117,21 @@ export function createServer(deps: ServerDeps) {
         );
       }
 
+      const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+      const route = entry
+        ? {
+            modelId: `${NAMESPACE}/${entry.slug}`,
+            functionId: entry.functionId,
+          }
+        : deps.defaultRoute;
+      if (!route) {
+        return errorJson(
+          `no route available for model '${reqModel}'`,
+          503,
+          "server_error",
+        );
+      }
+
       let token: string;
       try {
         token = await deps.pool.acquire();
@@ -130,20 +145,6 @@ export function createServer(deps: ServerDeps) {
 
       let up: Response;
       try {
-        const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
-        const route = entry
-          ? {
-              modelId: `${NAMESPACE}/${entry.slug}`,
-              functionId: entry.functionId,
-            }
-          : deps.defaultRoute;
-        if (!route) {
-          return errorJson(
-            `no route available for model '${reqModel}'`,
-            503,
-            "server_error",
-          );
-        }
         const messages = cache.augment(body.messages);
         up = await deps.upstream.chat({
           token,
