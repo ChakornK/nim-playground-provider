@@ -1,9 +1,12 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
 import {
   chromium,
   type Browser,
   type BrowserContext,
   type Page,
 } from "playwright-core";
+import { BunCDPTransport } from "./cdp-transport";
 import { USER_AGENT } from "./constants";
 
 const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
@@ -11,6 +14,8 @@ const HCAPTCHA_API =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
 // hCaptcha tokens are domain-bound to the sitekey's registered origin
 const BLANK_ORIGIN = "https://build.nvidia.com/z-ai/glm-5.2";
+
+const CDP_READY_TIMEOUT_MS = 15_000;
 
 const MINT_ATTEMPTS = 3;
 const MINT_TIMEOUT_MS = 60_000;
@@ -39,11 +44,12 @@ export class BrowserSession {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private context: BrowserContext | null = null;
+  private proc: ChildProcess | null = null;
   private minting: Promise<string> | null = null;
 
   constructor(
     private opts: {
-      executablePath?: string;
+      lightpandaPath?: string;
     } = {},
   ) {}
 
@@ -74,6 +80,8 @@ export class BrowserSession {
       this.browser = null;
       this.page = null;
       this.context = null;
+      this.proc?.kill();
+      this.proc = null;
     }
   }
 
@@ -92,10 +100,57 @@ export class BrowserSession {
 
   private async ensureBrowser() {
     if (this.browser) return;
-    this.browser = await chromium.launch({
-      headless: true,
-      executablePath: this.opts.executablePath,
+    const exe = this.opts.lightpandaPath;
+    if (!exe) throw new Error("LIGHTPANDA_PATH not set");
+
+    // Reserve a free port so we don't collide with another listener (adb uses 9222).
+    const cdpPort = await new Promise<number>((resolve, reject) => {
+      const s = createServer();
+      s.on("error", reject);
+      s.listen(0, "127.0.0.1", () => {
+        const port = (s.address() as AddressInfo).port;
+        s.close(() => resolve(port));
+      });
     });
+
+    // Drive lightpanda over CDP instead of launching Chromium.
+    this.proc = spawn(
+      exe,
+      [
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        String(cdpPort),
+        "--log-level",
+        "error",
+      ],
+      { stdio: ["ignore", "inherit", "inherit"] },
+    );
+
+    // Wait for the CDP endpoint before connecting.
+    const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+        if (r.ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!ready) throw new Error("lightpanda CDP endpoint not ready");
+
+    // Fetch the ws URL, then connect via Bun's native WebSocket wrapped as a
+    // Playwright transport (playwright-core's built-in `ws` transport hangs
+    // under Bun).
+    const ver = (await (
+      await fetch(`http://127.0.0.1:${cdpPort}/json/version`)
+    ).json()) as { webSocketDebuggerUrl: string };
+    const transport = await BunCDPTransport.connect(ver.webSocketDebuggerUrl);
+    this.browser = await chromium.connectOverCDP(transport, {});
     this.context = await this.browser.newContext({ userAgent: USER_AGENT });
     this.page = await this.context.newPage();
     await this.page.goto(BLANK_ORIGIN, {

@@ -6,8 +6,9 @@ A proxy that turns NVIDIA's free inference playground into an OpenAI-compatible 
 
 ```bash
 bun install
-bunx playwright install chromium
-bun start
+# download the lightpanda nightly binary and point the proxy at it
+curl -sL -o lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && chmod +x lightpanda
+LIGHTPANDA_PATH=./lightpanda bun start
 ```
 
 The server listens on `http://localhost:8787`.
@@ -22,13 +23,13 @@ curl http://localhost:8787/v1/chat/completions \
 
 All settings use environment variables. None are required.
 
-| Variable        | Default              | Purpose                                 |
-| --------------- | -------------------- | --------------------------------------- |
-| `PORT`          | `8787`               | Listen port                             |
-| `HOST`          | `127.0.0.1`          | Bind address (localhost by default)     |
-| `POOL_SIZE`     | `2`                  | Pre-minted hCaptcha tokens to keep warm |
-| `CHROMIUM_PATH` | (Playwright bundled) | Path to Chromium binary                 |
-| `MODEL`         | `z-ai/glm-5.2`       | Fallback model name                     |
+| Variable          | Default        | Purpose                                 |
+| ----------------- | -------------- | --------------------------------------- |
+| `PORT`            | `8787`         | Listen port                             |
+| `HOST`            | `127.0.0.1`    | Bind address (localhost by default)     |
+| `POOL_SIZE`       | `2`            | Pre-minted hCaptcha tokens to keep warm |
+| `LIGHTPANDA_PATH` | (none)         | Path to the Lightpanda binary           |
+| `MODEL`           | `z-ai/glm-5.2` | Fallback model name                     |
 
 ## API
 
@@ -44,7 +45,7 @@ Returns the model list. On startup the proxy builds a catalog from NVIDIA's publ
 
 ## How it works
 
-NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This proxy runs a headless Chromium browser that mints tokens on `build.nvidia.com` and keeps a warm pool. Each request pulls a token from the pool, calls the NVIDIA API, and translates the response into OpenAI format.
+NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This proxy spawns a [Lightpanda](https://github.com/lightpanda-io/browser) headless browser and drives it over CDP via Playwright to mint hCaptcha tokens on `build.nvidia.com`, keeping a warm pool. Each request pulls a token from the pool, calls the NVIDIA API, and translates the response into OpenAI format.
 
 ## Tests
 

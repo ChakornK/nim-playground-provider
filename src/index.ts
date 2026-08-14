@@ -8,7 +8,7 @@ import { Upstream } from "./upstream";
 
 const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 
-const session = new BrowserSession({ executablePath: env.chromiumPath });
+const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
 
