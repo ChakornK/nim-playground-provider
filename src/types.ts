@@ -30,8 +30,6 @@ export interface ChatRequest {
   max_tokens?: number;
   enable_thinking?: boolean;
   tools?: unknown[];
-  /** Non-standard: scopes the thinking cache so reasoning cannot leak across conversations. */
-  session_id?: string;
 }
 
 export interface OpenAIChunk {

@@ -1,13 +1,7 @@
 import { env, NAMESPACE } from "./constants";
-import { ThinkingCache } from "./thinking-cache";
 import type { TokenPool } from "./token-pool";
 import { transformStream } from "./translate";
-import type {
-  CatalogEntry,
-  ChatCompletion,
-  ChatRequest,
-  ModelRoute,
-} from "./types";
+import type { CatalogEntry, ChatRequest, ModelRoute } from "./types";
 import type { Upstream } from "./upstream";
 
 export interface ServerDeps {
@@ -16,7 +10,6 @@ export interface ServerDeps {
   model?: string;
   port?: number;
   host?: string;
-  cache?: ThinkingCache;
   /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
   catalog?: CatalogEntry[];
   /** Mutable catalog source; when provided, the server reads it per request instead of the static `catalog`. */
@@ -65,7 +58,6 @@ export function createServer(deps: ServerDeps) {
   const model = deps.model ?? env.model;
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
-  const cache = deps.cache ?? new ThinkingCache();
 
   const lookup = (id: string) => getCatalog().find((m) => m.id === id);
 
@@ -144,13 +136,9 @@ export function createServer(deps: ServerDeps) {
 
     let up: Response;
     try {
-      const messages = cache.augment(body.messages, {
-        enabled: body.enable_thinking !== false,
-        sessionId: body.session_id,
-      });
       up = await deps.upstream.chat({
         token,
-        messages,
+        messages: body.messages,
         model: reqModel,
         route,
         temperature: body.temperature,
@@ -176,14 +164,6 @@ export function createServer(deps: ServerDeps) {
     if (!stream) {
       const completion = (await up.json()) as Record<string, unknown>;
       completion.id = `chatcmpl-${crypto.randomUUID()}`;
-      const msg = (completion as { choices?: ChatCompletion["choices"] })
-        .choices?.[0]?.message;
-      cache.remember(
-        body.messages,
-        msg?.reasoning_content ?? "",
-        msg?.content ?? "",
-        body.session_id,
-      );
       return json(completion, 200);
     }
 
@@ -191,23 +171,15 @@ export function createServer(deps: ServerDeps) {
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
-        let reasoning = "";
-        let answer = "";
         try {
           for await (const frame of transformStream(
             up.body as ReadableStream<Uint8Array>,
-            (c) => {
-              const d = c.choices?.[0]?.delta;
-              if (d?.reasoning_content) reasoning += d.reasoning_content;
-              if (d?.content) answer += d.content;
-            },
           )) {
             controller.enqueue(enc.encode(frame));
           }
         } catch {
           // upstream dropped mid-stream; close without a partial [DONE]
         } finally {
-          cache.remember(body.messages, reasoning, answer, body.session_id);
           try {
             controller.close();
           } catch {}

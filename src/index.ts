@@ -2,7 +2,6 @@ import { BrowserSession } from "./browser";
 import { buildCatalog, resolveModelRoute } from "./catalog";
 import { env } from "./constants";
 import { createServer } from "./server";
-import { ThinkingCache } from "./thinking-cache";
 import { TokenPool } from "./token-pool";
 import type { CatalogEntry, ModelRoute } from "./types";
 import { Upstream } from "./upstream";
@@ -46,14 +45,12 @@ void refreshCatalog().then(() =>
   setInterval(refreshCatalog, CATALOG_REFRESH_MS),
 );
 
-const cache = new ThinkingCache();
 const server = createServer({
   pool,
   upstream,
   model: env.model,
   getCatalog: () => catalog,
   defaultRoute,
-  cache,
 });
 
 console.log(

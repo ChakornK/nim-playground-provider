@@ -35,14 +35,6 @@ export function buildUpstreamBody(params: {
   };
 }
 
-/**
- * GLM wire convention for carrying cached reasoning into a conversation:
- * the model reads ` thinking ...\n response ...` as prior assistant thought.
- */
-export function formatThinking(reasoning: string, answer: string): string {
-  return ` thinking\n${reasoning}\n response\n${answer}`;
-}
-
 export class Upstream {
   /** Fetch a completion from NVIDIA. Resolves once headers arrive; body is consumed by caller. */
   async chat(params: UpstreamChatParams): Promise<Response> {
