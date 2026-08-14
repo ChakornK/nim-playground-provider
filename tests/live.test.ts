@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { BrowserSession } from "../src/browser";
+import { resolveModelRoute } from "../src/catalog";
 import { env } from "../src/constants";
 import { createServer } from "../src/server";
 import { TokenPool } from "../src/token-pool";
@@ -7,16 +8,22 @@ import { Upstream } from "../src/upstream";
 
 const LIVE = !!process.env.NVIDIA_LIVE;
 
+/** Real deploy route for the default model, resolved against the queue endpoint. */
+const route = () => resolveModelRoute(env.model);
+
 test.skipIf(!LIVE)(
   "live: streaming completion shows reasoning then content and terminates with [DONE]",
   async () => {
     const session = new BrowserSession({ executablePath: env.chromiumPath });
     const pool = new TokenPool(session, 1);
-    const upstream = new Upstream({
-      modelId: env.modelId,
-      functionId: env.functionId,
+    const upstream = new Upstream();
+    const server = createServer({
+      pool,
+      upstream,
+      model: env.model,
+      defaultRoute: (await route()) ?? undefined,
+      port: 0,
     });
-    const server = createServer({ pool, upstream, model: env.model, port: 0 });
     const base = `http://localhost:${server.port}`;
     try {
       const r = await fetch(`${base}/v1/chat/completions`, {
@@ -46,11 +53,14 @@ test.skipIf(!LIVE)(
   async () => {
     const session = new BrowserSession({ executablePath: env.chromiumPath });
     const pool = new TokenPool(session, 1);
-    const upstream = new Upstream({
-      modelId: env.modelId,
-      functionId: env.functionId,
+    const upstream = new Upstream();
+    const server = createServer({
+      pool,
+      upstream,
+      model: env.model,
+      defaultRoute: (await route()) ?? undefined,
+      port: 0,
     });
-    const server = createServer({ pool, upstream, model: env.model, port: 0 });
     const base = `http://localhost:${server.port}`;
     try {
       const r = await fetch(`${base}/v1/chat/completions`, {
@@ -102,11 +112,14 @@ test.skipIf(!LIVE)(
   async () => {
     const session = new BrowserSession({ executablePath: env.chromiumPath });
     const pool = new TokenPool(session, 1);
-    const upstream = new Upstream({
-      modelId: env.modelId,
-      functionId: env.functionId,
+    const upstream = new Upstream();
+    const server = createServer({
+      pool,
+      upstream,
+      model: env.model,
+      defaultRoute: (await route()) ?? undefined,
+      port: 0,
     });
-    const server = createServer({ pool, upstream, model: env.model, port: 0 });
     const base = `http://localhost:${server.port}`;
     try {
       const r = await fetch(`${base}/v1/chat/completions`, {

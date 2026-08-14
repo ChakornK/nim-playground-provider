@@ -65,6 +65,7 @@ const deps: ServerDeps = {
   upstream: upstreamMock(),
   model: "z-ai/glm-5.2",
   port: 0,
+  defaultRoute: { modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fid" },
 };
 
 let server: ReturnType<typeof createServer>;
@@ -309,6 +310,7 @@ describe("thinking persistence", () => {
         },
       } as unknown as Upstream,
       model: "z-ai/glm-5.2",
+      defaultRoute: { modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fid" },
       port: 0,
     });
     tBase = `http://localhost:${tServer.port}`;

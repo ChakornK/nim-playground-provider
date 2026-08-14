@@ -1,4 +1,4 @@
-import { env } from "./constants";
+import { env, NAMESPACE } from "./constants";
 import { ThinkingCache } from "./thinking-cache";
 import type { TokenPool } from "./token-pool";
 import { transformStream } from "./translate";
@@ -11,7 +11,7 @@ export interface ServerDeps {
   model?: string;
   port?: number;
   cache?: ThinkingCache;
-  /** Built at startup by `buildCatalog()`. Falls back to a single default when absent. */
+  /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
   catalog?: Array<{
     id: string;
     slug: string;
@@ -19,6 +19,8 @@ export interface ServerDeps {
     created: number;
     ownedBy: string;
   }>;
+  /** Dynamically resolved fallback deploy route for the default model, used when the catalog is empty. */
+  defaultRoute?: { modelId: string; functionId: string };
 }
 
 export function parseBody(raw: unknown): ChatRequest | null {
@@ -136,15 +138,25 @@ export function createServer(deps: ServerDeps) {
       let up: Response;
       try {
         const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+        const route = entry
+          ? {
+              modelId: `${NAMESPACE}/${entry.slug}`,
+              functionId: entry.functionId,
+            }
+          : deps.defaultRoute;
+        if (!route) {
+          return errorJson(
+            `no route available for model '${reqModel}'`,
+            503,
+            "server_error",
+          );
+        }
         const messages = cache.augment(body.messages);
         up = await deps.upstream.chat({
           token,
           messages,
           model: reqModel,
-          route: {
-            modelId: entry ? `qc69jvmznzxy/${entry.slug}` : env.modelId,
-            functionId: entry?.functionId ?? env.functionId,
-          },
+          route,
           temperature: body.temperature,
           topP: body.top_p,
           maxTokens: body.max_tokens,

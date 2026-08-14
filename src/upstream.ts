@@ -1,17 +1,12 @@
 import { buildUpstreamBody, ORIGIN, REFERER, upstreamUrl } from "./constants";
 import type { UpstreamChatParams } from "./types";
 
-export interface UpstreamRoute {
-  modelId: string;
-  functionId: string;
-}
+export type UpstreamRoute = NonNullable<UpstreamChatParams["route"]>;
 
 export class Upstream {
-  constructor(private opts: UpstreamRoute) {}
-
   /** Fetch a completion from NVIDIA. Resolves once headers arrive; body is consumed by caller. */
   async chat(params: UpstreamChatParams): Promise<Response> {
-    const route = params.route ?? this.opts;
+    const route = params.route;
     const body = buildUpstreamBody({
       model: params.model,
       messages: params.messages,

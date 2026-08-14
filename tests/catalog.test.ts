@@ -3,6 +3,7 @@ import {
   buildCatalog,
   INTEGRATE_MODELS_URL,
   isTextCapable,
+  resolveModelRoute,
   slugCandidates,
 } from "../src/catalog";
 
@@ -95,4 +96,29 @@ test("buildCatalog propagates integrate-list failure", async () => {
   await expect(buildCatalog({ fetchImpl })).rejects.toThrow(
     /integrate model list 502/,
   );
+});
+
+test("resolveModelRoute probes the queue for a single model", async () => {
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    if (u.endsWith("/queues/models/qc69jvmznzxy/glm-5.2")) {
+      return new Response(JSON.stringify({ functionId: "glm-fn" }), {
+        status: 200,
+      });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  expect(
+    await resolveModelRoute("z-ai/glm-5.2", fetchImpl as typeof fetch),
+  ).toEqual({ modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fn" });
+});
+
+test("resolveModelRoute returns null when the queue probe fails", async () => {
+  const fetchImpl = async (_url: string | URL) =>
+    new Response("not found", { status: 404 });
+  const res = await resolveModelRoute(
+    "nope/not-found",
+    fetchImpl as typeof fetch,
+  );
+  expect(res).toBeNull();
 });

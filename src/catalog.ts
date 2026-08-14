@@ -2,7 +2,7 @@
 // from the public OpenAI-compatible model list (`integrate.api.nvidia.com`)
 // plus per-model function IDs from the queue endpoint.
 
-import { UPSTREAM_BASE } from "./constants";
+import { NAMESPACE, UPSTREAM_BASE } from "./constants";
 
 export interface CatalogEntry {
   /** OpenAI-compatible model, e.g. `z-ai/glm-5.2`. Also the body `model`. */
@@ -17,7 +17,6 @@ export interface CatalogEntry {
 
 export const INTEGRATE_MODELS_URL =
   "https://integrate.api.nvidia.com/v1/models";
-const NAMESPACE = "qc69jvmznzxy";
 
 type CatalogFetch = (
   url: string | URL,
@@ -103,6 +102,28 @@ async function mapPool<T, R>(
     Array.from({ length: Math.min(limit, items.length) }, worker),
   );
   return out;
+}
+
+export interface ModelRoute {
+  modelId: string;
+  functionId: string;
+}
+
+/**
+ * Resolve a single model's deploy route (predict path + queue function id) by
+ * probing the queue endpoint. Used as the fallback when the full catalog
+ * cannot be fetched: any reachable default model still routes correctly
+ * without hardcoded deployment values.
+ */
+export async function resolveModelRoute(
+  id: string,
+  fetchImpl: CatalogFetch = fetch,
+): Promise<ModelRoute | null> {
+  for (const slug of slugCandidates(id)) {
+    const functionId = await probeFunctionId(slug, fetchImpl);
+    if (functionId) return { modelId: `${NAMESPACE}/${slug}`, functionId };
+  }
+  return null;
 }
 
 /**

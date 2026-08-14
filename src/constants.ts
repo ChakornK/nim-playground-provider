@@ -6,9 +6,8 @@ export const HCAPTCHA_API =
 export const BLANK_ORIGIN = "https://build.nvidia.com/z-ai/glm-5.2";
 
 export const DEFAULT_MODEL = "z-ai/glm-5.2";
-export const DEFAULT_MODEL_ID = "qc69jvmznzxy/glm-5.2"; // NVIDIA deployment path segment
-export const DEFAULT_FUNCTION_ID = "3b9748d8-1d85-40e8-8573-0eeaa63a4b63"; // NVIDIA queue function id
 export const UPSTREAM_BASE = "https://api.ngc.nvidia.com/v2/predict";
+export const NAMESPACE = "qc69jvmznzxy"; // predict/queue deployment namespace
 export const ORIGIN = "https://build.nvidia.com";
 export const REFERER = "https://build.nvidia.com/";
 
@@ -22,8 +21,6 @@ export const env = {
   port: num(process.env.PORT, 8787),
   poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
   chromiumPath: process.env.CHROMIUM_PATH,
-  modelId: process.env.NVIDIA_MODEL_ID ?? DEFAULT_MODEL_ID,
-  functionId: process.env.NVIDIA_FUNCTION_ID ?? DEFAULT_FUNCTION_ID,
   model: process.env.MODEL ?? DEFAULT_MODEL,
   thinkingCacheFile: process.env.THINKING_CACHE_FILE ?? ".thinking-cache.json",
 };
