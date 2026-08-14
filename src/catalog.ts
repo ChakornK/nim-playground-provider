@@ -44,9 +44,10 @@ export function isTextCapable(id: string): boolean {
     )
   )
     return false;
-  // Embedding/retrieval/score/guard outputs are not chat text.
+  // Embedding/retrieval/score/guard outputs are not chat text. Word-boundary
+  // anchored so embedded keywords in text-model names do not match.
   if (
-    /(embed|retriev|rerank|parse|ocr|reward|guard|content-safety|topic-control|safety|nis-email|dns|evil|calc|mitre|vuln|divergentca|cve)/.test(
+    /\b(embed|retriev|rerank|parse|ocr|reward|guard|content-safety|topic-control|safety|nis-email|dns|evil|calc|mitre|vuln|divergentca|cve)\b/.test(
       name,
     )
   )

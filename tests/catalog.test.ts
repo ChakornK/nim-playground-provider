@@ -19,6 +19,9 @@ test("isTextCapable keeps LLMs and vision-language, drops non-text", () => {
   expect(isTextCapable("nvidia/riva-translate-4b-instruct-v2")).toBe(false);
   expect(isTextCapable("nvidia/nemoretriever-parse")).toBe(false);
   expect(isTextCapable("meta/llama-guard-4-12b")).toBe(false);
+  // Substring match must not drop a text model whose name embeds a denylisted
+  // keyword (e.g. "embed" inside "embedding-note-taker").
+  expect(isTextCapable("nvidia/embedding-note-taker")).toBe(true);
 });
 
 test("slugCandidates tries the bare name then dots->underscores", () => {
