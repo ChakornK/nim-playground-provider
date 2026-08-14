@@ -19,6 +19,8 @@ export interface ServerDeps {
   cache?: ThinkingCache;
   /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
   catalog?: CatalogEntry[];
+  /** Mutable catalog source; when provided, the server reads it per request instead of the static `catalog`. */
+  getCatalog?: () => CatalogEntry[];
   /** Dynamically resolved fallback deploy route for the default model, used when the catalog is empty. */
   defaultRoute?: ModelRoute;
 }
@@ -61,10 +63,11 @@ const errorJson = (
 
 export function createServer(deps: ServerDeps) {
   const model = deps.model ?? env.model;
-  const catalog = deps.catalog ?? [];
+  const staticCatalog = deps.catalog ?? [];
+  const getCatalog = deps.getCatalog ?? (() => staticCatalog);
   const cache = deps.cache ?? new ThinkingCache();
 
-  const lookup = (id: string) => catalog.find((m) => m.id === id);
+  const lookup = (id: string) => getCatalog().find((m) => m.id === id);
 
   return Bun.serve({
     port: deps.port ?? env.port,
@@ -74,6 +77,7 @@ export function createServer(deps: ServerDeps) {
       if (req.method === "OPTIONS") return new Response(null, { status: 204 });
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
+        const catalog = getCatalog();
         const data =
           catalog.length > 0
             ? catalog.map((m) => ({
@@ -108,6 +112,7 @@ export function createServer(deps: ServerDeps) {
       const stream = body.stream !== false;
       const reqModel = body.model ?? model;
 
+      const catalog = getCatalog();
       if (catalog.length > 0 && !lookup(reqModel)) {
         return errorJson(
           `model '${reqModel}' not found`,

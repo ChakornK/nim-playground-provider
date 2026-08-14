@@ -4,45 +4,54 @@ import { env } from "./constants";
 import { createServer } from "./server";
 import { ThinkingCache } from "./thinking-cache";
 import { TokenPool } from "./token-pool";
+import type { CatalogEntry, ModelRoute } from "./types";
 import { Upstream } from "./upstream";
+
+const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 const session = new BrowserSession({ executablePath: env.chromiumPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
 
-// Catalog is best-effort: if NVIDIA's list is unreachable, resolve a deploy
-// route for the default model dynamically so the proxy still boots.
-let catalog: Awaited<ReturnType<typeof buildCatalog>> = [];
-let defaultRoute: { modelId: string; functionId: string } | undefined;
-try {
-  catalog = await buildCatalog();
+// Resolve the default route first so the proxy serves immediately even if the
+// full catalog takes time to build or NVIDIA's list is unreachable.
+const defaultRoute: ModelRoute | undefined =
+  (await resolveModelRoute(env.model)) ?? undefined;
+if (defaultRoute) {
   console.log(
-    `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
+    `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
   );
-} catch (e) {
+} else {
   console.warn(
-    `nim-playground-provider: catalog unavailable (${(e as Error).message}), resolving default model`,
+    `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
   );
 }
-if (catalog.length === 0) {
-  defaultRoute = (await resolveModelRoute(env.model)) ?? undefined;
-  if (defaultRoute) {
+
+// Catalog is best-effort: built in the background so boot never blocks on
+// NVIDIA, refreshed on a TTL so the model list does not go stale.
+let catalog: CatalogEntry[] = [];
+const refreshCatalog = async () => {
+  try {
+    catalog = await buildCatalog();
     console.log(
-      `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
+      `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
-  } else {
+  } catch (e) {
     console.warn(
-      `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
+      `nim-playground-provider: catalog refresh failed (${(e as Error).message})`,
     );
   }
-}
+};
+void refreshCatalog().then(() =>
+  setInterval(refreshCatalog, CATALOG_REFRESH_MS),
+);
 
 const cache = new ThinkingCache();
 const server = createServer({
   pool,
   upstream,
   model: env.model,
-  catalog,
+  getCatalog: () => catalog,
   defaultRoute,
   cache,
 });

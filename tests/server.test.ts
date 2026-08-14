@@ -10,7 +10,7 @@ import {
 } from "bun:test";
 import { createServer, type ServerDeps } from "../src/server";
 import type { TokenPool } from "../src/token-pool";
-import type { UpstreamChatParams } from "../src/types";
+import type { CatalogEntry, UpstreamChatParams } from "../src/types";
 import type { Upstream } from "../src/upstream";
 
 const fixture = () =>
@@ -555,4 +555,87 @@ describe("with a catalog", () => {
       functionId: "inkling-fid",
     });
   });
+});
+
+test("server reads the catalog from a mutable provider", async () => {
+  let current: CatalogEntry[] = [];
+  let chatCallsLocal = 0;
+  const catServer = createServer({
+    ...deps,
+    getCatalog: () => current,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        chatCallsLocal++;
+        lastParams = params;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-x",
+            object: "chat.completion",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: "hi",
+                  reasoning_content: "",
+                },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    } as unknown as Upstream,
+    model: "z-ai/glm-5.2",
+    port: 0,
+  });
+  const catBase = `http://localhost:${catServer.port}`;
+  try {
+    // unknown while catalog is empty falls back to the default route
+    const r1 = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "thinkingmachines/inkling",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    });
+    expect(r1.status).toBe(200);
+    expect(lastParams?.route).toEqual({
+      modelId: "qc69jvmznzxy/glm-5.2",
+      functionId: "glm-fid",
+    });
+
+    // once populated, the same request routes by the catalog entry
+    current = [
+      {
+        id: "thinkingmachines/inkling",
+        slug: "inkling",
+        functionId: "inkling-fid",
+        created: 1,
+        ownedBy: "thinkingmachines",
+      },
+    ];
+    const r2 = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "thinkingmachines/inkling",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    });
+    expect(r2.status).toBe(200);
+    expect(lastParams?.route).toEqual({
+      modelId: "qc69jvmznzxy/inkling",
+      functionId: "inkling-fid",
+    });
+  } finally {
+    await catServer.stop(true);
+  }
 });
