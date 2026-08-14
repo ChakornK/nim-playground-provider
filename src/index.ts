@@ -26,30 +26,36 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is best-effort: built in the background so boot never blocks on
-// NVIDIA, refreshed on a TTL so the model list does not go stale.
+// Catalog is fetched lazily on first /v1/models request to keep startup light.
 let catalog: CatalogEntry[] = [];
+let catalogState: "idle" | "fetching" | "ready" = "idle";
 const refreshCatalog = async () => {
+  if (catalogState === "fetching") return;
+  catalogState = "fetching";
   try {
     catalog = await buildCatalog();
+    catalogState = "ready";
     console.log(
       `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
+    setInterval(refreshCatalog, CATALOG_REFRESH_MS);
   } catch (e) {
+    catalogState = "idle";
     console.warn(
       `nim-playground-provider: catalog refresh failed (${(e as Error).message})`,
     );
   }
 };
-void refreshCatalog().then(() =>
-  setInterval(refreshCatalog, CATALOG_REFRESH_MS),
-);
+const getCatalog = () => {
+  if (catalogState === "idle") void refreshCatalog();
+  return catalog;
+};
 
 const server = await createServer({
   pool,
   upstream,
   model: env.model,
-  getCatalog: () => catalog,
+  getCatalog,
   defaultRoute,
 });
 
