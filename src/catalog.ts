@@ -138,7 +138,7 @@ export async function buildCatalog(opts?: {
 
   const entries = await mapPool(
     list.data,
-    opts?.concurrency ?? 12,
+    opts?.concurrency ?? 4,
     async (m) => {
       for (const slug of slugCandidates(m.id)) {
         const functionId = await probeFunctionId(slug, fetchImpl);
