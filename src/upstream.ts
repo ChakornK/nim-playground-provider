@@ -1,7 +1,47 @@
-import { buildUpstreamBody, ORIGIN, REFERER, upstreamUrl } from "./constants";
-import type { UpstreamChatParams } from "./types";
+import { ORIGIN, REFERER, UPSTREAM_BASE, USER_AGENT } from "./constants";
+import type { OpenAIMessage, UpstreamChatParams } from "./types";
 
-export type UpstreamRoute = NonNullable<UpstreamChatParams["route"]>;
+export function upstreamUrl(modelId: string): string {
+  return `${UPSTREAM_BASE}/models/${modelId}`;
+}
+
+export function buildUpstreamBody(params: {
+  model: string;
+  messages: OpenAIMessage[];
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  enableThinking: boolean;
+  stream: boolean;
+  tools?: unknown[];
+}) {
+  return {
+    stream: params.stream,
+    chat_template_kwargs: {
+      enable_thinking: params.enableThinking,
+      clear_thinking: false,
+    },
+    model: params.model,
+    temperature: params.temperature ?? 1,
+    top_p: params.topP ?? 1,
+    max_tokens: params.maxTokens ?? 16384,
+    messages: params.messages,
+    ...(params.tools?.length ? { tools: params.tools } : {}),
+    ...(params.stream
+      ? {
+          stream_options: { include_usage: true, continuous_usage_stats: true },
+        }
+      : {}),
+  };
+}
+
+/**
+ * GLM wire convention for carrying cached reasoning into a conversation:
+ * the model reads ` thinking ...\n response ...` as prior assistant thought.
+ */
+export function formatThinking(reasoning: string, answer: string): string {
+  return ` thinking\n${reasoning}\n response\n${answer}`;
+}
 
 export class Upstream {
   /** Fetch a completion from NVIDIA. Resolves once headers arrive; body is consumed by caller. */
@@ -25,8 +65,7 @@ export class Upstream {
         accept: "text/event-stream",
         origin: ORIGIN,
         referer: REFERER,
-        "user-agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "user-agent": USER_AGENT,
         "nv-captcha-token": params.token,
         "nv-function-id": route.functionId,
       },

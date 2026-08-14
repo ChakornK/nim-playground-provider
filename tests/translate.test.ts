@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { buildUpstreamBody } from "../src/constants";
 import { parseSSE } from "../src/sse";
 import { transformStream } from "../src/translate";
+import { buildUpstreamBody } from "../src/upstream";
 
 const fixture = () =>
   readFileSync(join(__dirname, "fixtures", "upstream.sse"), "utf8");

@@ -2,7 +2,12 @@ import { env, NAMESPACE } from "./constants";
 import { ThinkingCache } from "./thinking-cache";
 import type { TokenPool } from "./token-pool";
 import { transformStream } from "./translate";
-import type { ChatCompletion, ChatRequest } from "./types";
+import type {
+  CatalogEntry,
+  ChatCompletion,
+  ChatRequest,
+  ModelRoute,
+} from "./types";
 import type { Upstream } from "./upstream";
 
 export interface ServerDeps {
@@ -13,18 +18,12 @@ export interface ServerDeps {
   host?: string;
   cache?: ThinkingCache;
   /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
-  catalog?: Array<{
-    id: string;
-    slug: string;
-    functionId: string;
-    created: number;
-    ownedBy: string;
-  }>;
+  catalog?: CatalogEntry[];
   /** Dynamically resolved fallback deploy route for the default model, used when the catalog is empty. */
-  defaultRoute?: { modelId: string; functionId: string };
+  defaultRoute?: ModelRoute;
 }
 
-export function parseBody(raw: unknown): ChatRequest | null {
+function parseBody(raw: unknown): ChatRequest | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
   try {
     const obj = JSON.parse(raw) as ChatRequest;

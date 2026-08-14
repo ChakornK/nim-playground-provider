@@ -4,10 +4,17 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright-core";
-import { BLANK_ORIGIN, HCAPTCHA_API, HCAPTCHA_SITEKEY } from "./constants";
+import { USER_AGENT } from "./constants";
 
-const USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
+const HCAPTCHA_API =
+  "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
+// hCaptcha tokens are domain-bound to the sitekey's registered origin
+const BLANK_ORIGIN = "https://build.nvidia.com/z-ai/glm-5.2";
+
+const MINT_ATTEMPTS = 3;
+const MINT_TIMEOUT_MS = 60_000;
+const TOKEN_POLL_TIMEOUT_MS = 30_000;
 
 /** Resolve `p`, or reject with `Error(msg)` after `ms`. The timer is always cleared. */
 export async function withTimeout<T>(
@@ -37,8 +44,6 @@ export class BrowserSession {
   constructor(
     private opts: {
       executablePath?: string;
-      renderDelayMs?: number;
-      executeWaitMs?: number;
     } = {},
   ) {}
 
@@ -46,12 +51,12 @@ export class BrowserSession {
   async mintToken(): Promise<string> {
     if (this.minting) await this.minting.catch(() => {});
     this.minting = withTimeout(
-      this.mintTokenInner(),
-      60_000,
+      this.mintWithRetry(),
+      MINT_TIMEOUT_MS,
       "hcaptcha mint timed out",
     ).catch(async (e) => {
-      // close on every mint error: a hung execute or a partial launch would
-      // otherwise leave the page unusable and brick the session
+      // Only a persistent failure reaches here; the browser is closed so the
+      // next refill starts from a clean page instead of a stuck widget.
       await this.close();
       throw e;
     });
@@ -72,6 +77,19 @@ export class BrowserSession {
     }
   }
 
+  /** Retry recoverable mint failures on the same page before giving up. */
+  private async mintWithRetry(): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MINT_ATTEMPTS; attempt++) {
+      try {
+        return await this.mintTokenInner();
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError;
+  }
+
   private async ensureBrowser() {
     if (this.browser) return;
     this.browser = await chromium.launch({
@@ -80,13 +98,10 @@ export class BrowserSession {
     });
     this.context = await this.browser.newContext({ userAgent: USER_AGENT });
     this.page = await this.context.newPage();
-    // render on build.nvidia.com: hCaptcha tokens are domain-bound to the sitekey's registered origin
     await this.page.goto(BLANK_ORIGIN, {
       waitUntil: "domcontentloaded",
-      timeout: 60_000,
+      timeout: MINT_TIMEOUT_MS,
     });
-    // let the heavy SPA settle before injecting
-    await new Promise((r) => setTimeout(r, 5000));
     // Load hCaptcha api.js; it calls window.__hcLoad() when ready
     await this.page.evaluate((apiUrl) => {
       const w = window as unknown as Window & { __hcLoad?: () => void };
@@ -117,14 +132,26 @@ export class BrowserSession {
       return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
     }, HCAPTCHA_SITEKEY);
 
-    await new Promise((r) => setTimeout(r, this.opts.renderDelayMs ?? 3000));
     await page.evaluate((id) => {
       const w = window as unknown as Window & {
         hcaptcha: { execute: (id: string) => Promise<unknown> };
       };
       return w.hcaptcha.execute(id);
     }, widgetId);
-    await new Promise((r) => setTimeout(r, this.opts.executeWaitMs ?? 8000));
+
+    // Poll for the token instead of sleeping a fixed duration: latency tracks
+    // the real solve time rather than a worst-case estimate.
+    await page.waitForFunction(
+      (id) => {
+        const w = window as unknown as Window & {
+          hcaptcha: { getResponse: (id: string) => string };
+        };
+        const token = w.hcaptcha.getResponse(id);
+        return typeof token === "string" && token.startsWith("P1_");
+      },
+      widgetId,
+      { timeout: TOKEN_POLL_TIMEOUT_MS },
+    );
 
     const token = await page.evaluate((id) => {
       const w = window as unknown as Window & {

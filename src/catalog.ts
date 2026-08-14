@@ -2,18 +2,16 @@
 // from the public OpenAI-compatible model list (`integrate.api.nvidia.com`)
 // plus per-model function IDs from the queue endpoint.
 
-import { NAMESPACE, UPSTREAM_BASE } from "./constants";
+import {
+  NAMESPACE,
+  ORIGIN,
+  REFERER,
+  UPSTREAM_BASE,
+  USER_AGENT,
+} from "./constants";
+import type { CatalogEntry, ModelRoute } from "./types";
 
-export interface CatalogEntry {
-  /** OpenAI-compatible model, e.g. `z-ai/glm-5.2`. Also the body `model`. */
-  id: string;
-  /** Predict path segment, e.g. `glm-5.2` or `llama-3_1-8b-instruct`. */
-  slug: string;
-  /** Per-model value for the `nv-function-id` header. */
-  functionId: string;
-  created: number;
-  ownedBy: string;
-}
+export type { CatalogEntry, ModelRoute };
 
 export const INTEGRATE_MODELS_URL =
   "https://integrate.api.nvidia.com/v1/models";
@@ -26,13 +24,10 @@ type CatalogFetch = (
 const queueUrl = (slug: string) =>
   `${UPSTREAM_BASE}/queues/models/${NAMESPACE}/${slug}`;
 
-const UA =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-
 const QUEUE_HEADERS = {
-  "user-agent": UA,
-  origin: "https://build.nvidia.com",
-  referer: "https://build.nvidia.com/",
+  "user-agent": USER_AGENT,
+  origin: ORIGIN,
+  referer: REFERER,
 };
 
 /**
@@ -104,11 +99,6 @@ async function mapPool<T, R>(
   return out;
 }
 
-export interface ModelRoute {
-  modelId: string;
-  functionId: string;
-}
-
 /**
  * Resolve a single model's deploy route (predict path + queue function id) by
  * probing the queue endpoint. Used as the fallback when the full catalog
@@ -136,7 +126,7 @@ export async function buildCatalog(opts?: {
 }): Promise<CatalogEntry[]> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const r = await fetchImpl(INTEGRATE_MODELS_URL, {
-    headers: { "user-agent": UA },
+    headers: { "user-agent": USER_AGENT },
   });
   if (!r.ok) throw new Error(`integrate model list ${r.status}`);
   const list = (await r.json()) as {

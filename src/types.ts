@@ -5,6 +5,22 @@ export interface OpenAIMessage {
   tool_calls?: unknown[];
 }
 
+export interface CatalogEntry {
+  /** OpenAI-compatible model, e.g. `z-ai/glm-5.2`. Also the body `model`. */
+  id: string;
+  /** Predict path segment, e.g. `glm-5.2` or `llama-3_1-8b-instruct`. */
+  slug: string;
+  /** Per-model value for the `nv-function-id` header. */
+  functionId: string;
+  created: number;
+  ownedBy: string;
+}
+
+export interface ModelRoute {
+  modelId: string;
+  functionId: string;
+}
+
 export interface ChatRequest {
   model?: string;
   messages: OpenAIMessage[];
@@ -14,6 +30,8 @@ export interface ChatRequest {
   max_tokens?: number;
   enable_thinking?: boolean;
   tools?: unknown[];
+  /** Non-standard: scopes the thinking cache so reasoning cannot leak across conversations. */
+  session_id?: string;
 }
 
 export interface OpenAIChunk {
