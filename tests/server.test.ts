@@ -135,6 +135,80 @@ test("no route available returns 503 without consuming a token", async () => {
   }
 });
 
+test("upstream throw maps to 502 upstream_error", async () => {
+  const s = createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        throw new Error("boom");
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(502);
+    const body = await r.json();
+    expect(body.error.type).toBe("upstream_error");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("upstream non-OK maps to 502 with upstream status", async () => {
+  const s = createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        return new Response("rate limited", { status: 429 });
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(502);
+    const body = await r.json();
+    expect(body.error.type).toBe("upstream_error");
+    expect(body.error.message).toContain("429");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("mint failure maps to 503 server_error", async () => {
+  const s = createServer({
+    ...deps,
+    pool: {
+      async acquire() {
+        throw new Error("captcha down");
+      },
+    } as unknown as TokenPool,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(503);
+    const body = await r.json();
+    expect(body.error.type).toBe("server_error");
+    expect(body.error.message).toContain("captcha");
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("POST /v1/chat/completions with empty messages returns 400", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",

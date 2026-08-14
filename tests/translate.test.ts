@@ -95,6 +95,29 @@ test("parseSSE yields each data line, ignores blank lines and CRLF", async () =>
   expect(lines).toEqual(["a", "b", "c"]);
 });
 
+test("transformStream flushes held usage when the stream ends without [DONE]", async () => {
+  const raw =
+    'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n';
+  const frames = await collect(transformStream(streamOf(raw)));
+  expect(frames).toHaveLength(1);
+  const first = frames[0] as string;
+  const parsed = JSON.parse(first.replace(/^data: /, "")) as {
+    usage?: { total_tokens: number };
+  };
+  expect(parsed.usage?.total_tokens).toBe(2);
+});
+
+test("transformStream drops malformed frames", async () => {
+  const raw =
+    "data: not json\n\n" +
+    'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+    "data: [DONE]\n\n";
+  const frames = await collect(transformStream(streamOf(raw)));
+  expect(frames).toHaveLength(2);
+  expect(frames[0]).toContain('"content":"hi"');
+  expect(frames[1]).toBe("data: [DONE]\n\n");
+});
+
 test("transformStream keeps reasoning/content deltas and strips usage except final frame", async () => {
   const frames = await collect(transformStream(streamOf(fixture())));
   expect(frames.at(-1)).toBe("data: [DONE]\n\n");
