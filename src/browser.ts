@@ -6,13 +6,13 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright-core";
-import { USER_AGENT } from "./constants.ts";
+import { env, USER_AGENT } from "./constants.ts";
 
-const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 const HCAPTCHA_API =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
 // hCaptcha tokens are domain-bound to the sitekey's registered origin
-const BLANK_ORIGIN = "https://build.nvidia.com/z-ai/glm-5.2";
+const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
+const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 
 const CDP_READY_TIMEOUT_MS = 15_000;
 
@@ -144,7 +144,7 @@ export class BrowserSession {
     this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     this.context = await this.browser.newContext({ userAgent: USER_AGENT });
     this.page = await this.context.newPage();
-    await this.page.goto(BLANK_ORIGIN, {
+    await this.page.goto(blankOrigin(), {
       waitUntil: "domcontentloaded",
       timeout: MINT_TIMEOUT_MS,
     });
