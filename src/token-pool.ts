@@ -37,6 +37,11 @@ export class TokenPool {
     this.opts = opts;
   }
 
+  /** Start background refilling immediately, without blocking. */
+  prewarm() {
+    this.scheduleRefill();
+  }
+
   /** Take a token, blocking until one is available (warm or freshly minted). */
   async acquire(): Promise<string> {
     const token = this.tokens.pop();

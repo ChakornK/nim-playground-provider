@@ -51,6 +51,8 @@ const getCatalog = () => {
   return catalog;
 };
 
+pool.prewarm();
+
 const server = await createServer({
   pool,
   upstream,
