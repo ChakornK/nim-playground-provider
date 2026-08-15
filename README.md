@@ -2,13 +2,15 @@
 
 A proxy that turns NVIDIA's free inference playground into an OpenAI-compatible API. Point any OpenAI client at it and use models without an API key or NVIDIA account.
 
+## Requirements
+
+[Lightpanda](https://github.com/lightpanda-io/browser) must be installed. The proxy finds it on your `PATH`, or you can point to it with `LIGHTPANDA_PATH`.
+
 ## Quick start
 
 ```bash
 npm install
-# download the lightpanda nightly binary and point the proxy at it
-curl -sL -o lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && chmod +x lightpanda
-LIGHTPANDA_PATH=./lightpanda npm start
+npm start
 ```
 
 The server listens on `http://localhost:8787`.
@@ -23,13 +25,13 @@ curl http://localhost:8787/v1/chat/completions \
 
 All settings use environment variables. None are required.
 
-| Variable          | Default        | Purpose                                 |
-| ----------------- | -------------- | --------------------------------------- |
-| `PORT`            | `8787`         | Listen port                             |
-| `HOST`            | `127.0.0.1`    | Bind address (localhost by default)     |
-| `POOL_SIZE`       | `2`            | Pre-minted hCaptcha tokens to keep warm |
-| `LIGHTPANDA_PATH` | (none)         | Path to the Lightpanda binary           |
-| `MODEL`           | `z-ai/glm-5.2` | Fallback model name                     |
+| Variable          | Default         | Purpose                                                 |
+| ----------------- | --------------- | ------------------------------------------------------- |
+| `PORT`            | `8787`          | Listen port                                             |
+| `HOST`            | `127.0.0.1`     | Bind address (localhost by default)                     |
+| `POOL_SIZE`       | `2`             | Pre-minted hCaptcha tokens to keep warm                 |
+| `LIGHTPANDA_PATH` | (auto-detected) | Path to the Lightpanda binary, overrides PATH detection |
+| `MODEL`           | `z-ai/glm-5.2`  | Fallback model name                                     |
 
 ## API
 
