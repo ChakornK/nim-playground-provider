@@ -12,7 +12,8 @@ const HCAPTCHA_API =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
 // hCaptcha tokens are domain-bound to the sitekey's registered origin
 const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
-const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
+// Fallback sitekey used when the page does not expose one via data-sitekey.
+const HCAPTCHA_SITEKEY_FALLBACK = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 
 // Build a Chrome UA from the CDP-reported version; falls back to the static
 // UA when the version string is missing or malformed.
@@ -55,6 +56,7 @@ export class BrowserSession {
   private context: BrowserContext | null = null;
   private proc: ChildProcess | null = null;
   private minting: Promise<string> | null = null;
+  private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
   private opts: { lightpandaPath?: string };
 
   constructor(opts: { lightpandaPath?: string } = {}) {
@@ -161,6 +163,14 @@ export class BrowserSession {
       waitUntil: "domcontentloaded",
       timeout: MINT_TIMEOUT_MS,
     });
+
+    // Extract the hCaptcha sitekey from the page; fall back to the default.
+    const scraped = await this.page.evaluate(() => {
+      const el = document.querySelector("[data-sitekey]");
+      return el?.getAttribute("data-sitekey") ?? null;
+    });
+    if (scraped) this.sitekey = scraped;
+
     // Load hCaptcha api.js; it calls window.__hcLoad() when ready
     await this.page.evaluate((apiUrl) => {
       const w = window as unknown as Window & { __hcLoad?: () => void };
@@ -189,7 +199,7 @@ export class BrowserSession {
         "position:fixed;left:10px;top:10px;width:300px;height:80px;z-index:99999";
       document.body.appendChild(div);
       return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
-    }, HCAPTCHA_SITEKEY);
+    }, this.sitekey);
 
     await page.evaluate((id) => {
       const w = window as unknown as Window & {
