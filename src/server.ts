@@ -178,39 +178,57 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       );
     }
 
-    let token: string;
-    try {
-      token = await deps.pool.acquire();
-    } catch (e) {
-      return errorJson(
-        `captcha solver unavailable: ${(e as Error).message}`,
-        503,
-        "server_error",
-      );
+    // A rejected token (expired or blocked) yields a client error that mentions
+    // the captcha; other statuses are returned as-is. Retry with a fresh token.
+    const isTokenRejection = (status: number, text: string) =>
+      (status === 400 || status === 401 || status === 403) &&
+      /captcha|hcaptcha|token/i.test(text);
+
+    const MAX_TOKEN_RETRIES = 2;
+    let up: Response | null = null;
+    let lastUpstreamError: { status: number; text: string } | null = null;
+    for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
+      let token: string;
+      try {
+        token = await deps.pool.acquire();
+      } catch (e) {
+        return errorJson(
+          `captcha solver unavailable: ${(e as Error).message}`,
+          503,
+          "server_error",
+        );
+      }
+
+      let res: Response;
+      try {
+        res = await deps.upstream.chat({
+          token,
+          messages: body.messages,
+          model: reqModel,
+          route,
+          temperature: body.temperature,
+          topP: body.top_p,
+          maxTokens: body.max_tokens,
+          enableThinking: body.enable_thinking !== false,
+          stream,
+          tools: body.tools,
+        });
+      } catch (e) {
+        return errorJson((e as Error).message, 502, "upstream_error");
+      }
+
+      if (res.ok) {
+        up = res;
+        break;
+      }
+      const text = await res.text().catch(() => "");
+      lastUpstreamError = { status: res.status, text };
+      if (!isTokenRejection(res.status, text)) break;
     }
 
-    let up: Response;
-    try {
-      up = await deps.upstream.chat({
-        token,
-        messages: body.messages,
-        model: reqModel,
-        route,
-        temperature: body.temperature,
-        topP: body.top_p,
-        maxTokens: body.max_tokens,
-        enableThinking: body.enable_thinking !== false,
-        stream,
-        tools: body.tools,
-      });
-    } catch (e) {
-      return errorJson((e as Error).message, 502, "upstream_error");
-    }
-
-    if (!up.ok) {
-      const text = await up.text().catch(() => "");
+    if (!up) {
       return errorJson(
-        `upstream ${up.status}: ${text.slice(0, 500)}`,
+        `upstream ${lastUpstreamError?.status}: ${lastUpstreamError?.text.slice(0, 500)}`,
         502,
         "upstream_error",
       );

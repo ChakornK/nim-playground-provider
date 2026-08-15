@@ -206,6 +206,87 @@ test("mint failure maps to 503 server_error", async () => {
   }
 });
 
+test("expired captcha token retries with a fresh token", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) {
+          return new Response('{"error":"Invalid captcha token"}', {
+            status: 400,
+          });
+        }
+        lastParams = params;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-retry",
+            object: "chat.completion",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    } as unknown as Upstream,
+    pool: {
+      async acquire() {
+        return "P1_retry_token";
+      },
+    } as unknown as TokenPool,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(lastParams?.token).toBe("P1_retry_token");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("non-captcha upstream errors are not retried", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        calls++;
+        return new Response("rate limited", { status: 429 });
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(502);
+    expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("POST /v1/chat/completions with empty messages returns 400", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
