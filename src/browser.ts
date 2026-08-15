@@ -8,12 +8,22 @@ import {
 } from "playwright-core";
 import { env, USER_AGENT } from "./constants.ts";
 
-const HCAPTCHA_API =
+// Fallback hCaptcha API URL; overridden when the page provides its own script.
+const HCAPTCHA_API_FALLBACK =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
 // hCaptcha tokens are domain-bound to the sitekey's registered origin
 const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
 // Fallback sitekey used when the page does not expose one via data-sitekey.
 const HCAPTCHA_SITEKEY_FALLBACK = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
+
+// Ensure the hCaptcha API URL includes the render=explicit and onload params
+// so the script calls window.__hcLoad() when ready.
+function appendOnloadParam(src: string): string {
+  const u = new URL(src);
+  u.searchParams.set("render", "explicit");
+  u.searchParams.set("onload", "__hcLoad");
+  return u.toString();
+}
 
 // Build a Chrome UA from the CDP-reported version; falls back to the static
 // UA when the version string is missing or malformed.
@@ -57,6 +67,7 @@ export class BrowserSession {
   private proc: ChildProcess | null = null;
   private minting: Promise<string> | null = null;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
+  private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
   private opts: { lightpandaPath?: string };
 
   constructor(opts: { lightpandaPath?: string } = {}) {
@@ -164,12 +175,21 @@ export class BrowserSession {
       timeout: MINT_TIMEOUT_MS,
     });
 
-    // Extract the hCaptcha sitekey from the page; fall back to the default.
+    // Extract the hCaptcha sitekey and API URL from the page; fall back to defaults.
     const scraped = await this.page.evaluate(() => {
-      const el = document.querySelector("[data-sitekey]");
-      return el?.getAttribute("data-sitekey") ?? null;
+      const keyEl = document.querySelector("[data-sitekey]");
+      const scriptEl = document.querySelector<HTMLScriptElement>(
+        "script[src*='hcaptcha']",
+      );
+      return {
+        sitekey: keyEl?.getAttribute("data-sitekey") ?? null,
+        apiUrl: scriptEl?.src ?? null,
+      };
     });
-    if (scraped) this.sitekey = scraped;
+    if (scraped.sitekey) this.sitekey = scraped.sitekey;
+    if (scraped.apiUrl) {
+      this.hcaptchaApiUrl = appendOnloadParam(scraped.apiUrl);
+    }
 
     // Load hCaptcha api.js; it calls window.__hcLoad() when ready
     await this.page.evaluate((apiUrl) => {
@@ -181,7 +201,7 @@ export class BrowserSession {
         s.onerror = () => reject(new Error("hcaptcha api.js load failed"));
         document.head.appendChild(s);
       });
-    }, HCAPTCHA_API);
+    }, this.hcaptchaApiUrl);
   }
 
   private async mintTokenInner(): Promise<string> {
