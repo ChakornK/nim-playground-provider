@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+
 export const DEFAULT_MODEL = "z-ai/glm-5.2";
 export const UPSTREAM_BASE = "https://api.ngc.nvidia.com/v2/predict";
 export const NAMESPACE = "qc69jvmznzxy"; // predict/queue deployment namespace
@@ -13,6 +16,22 @@ const num = (v: string | undefined, dflt: number): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
 };
+
+const lightpandaExe =
+  process.platform === "win32" ? "lightpanda.exe" : "lightpanda";
+
+export function detectLightpanda(): string {
+  const override = process.env.LIGHTPANDA_PATH;
+  if (override) return override;
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, lightpandaExe);
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `lightpanda not found on PATH; set LIGHTPANDA_PATH to the binary location`,
+  );
+}
 
 export const env = {
   port: num(process.env.PORT, 8787),

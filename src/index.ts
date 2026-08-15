@@ -5,13 +5,14 @@ import {
   resolveNamespace,
   setNamespace,
 } from "./catalog.ts";
-import { env } from "./constants.ts";
+import { detectLightpanda, env } from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 import { Upstream } from "./upstream.ts";
 
-const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
+const lightpandaPath = detectLightpanda();
+const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
 
