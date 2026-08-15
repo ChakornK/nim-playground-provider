@@ -49,6 +49,15 @@ Returns the model list. On startup the proxy builds a catalog from NVIDIA's publ
 
 NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This proxy spawns a [Lightpanda](https://github.com/lightpanda-io/browser) headless browser and drives it over CDP via Playwright to mint hCaptcha tokens on `build.nvidia.com`, keeping a warm pool. Each request pulls a token from the pool, calls the NVIDIA API, and translates the response into OpenAI format.
 
+## Docker
+
+```bash
+docker build -t nim-playground-provider .
+docker run -p 8787:8787 nim-playground-provider
+```
+
+The container bundles Lightpanda and uses the same environment variables as local execution.
+
 ## Tests
 
 ```bash
