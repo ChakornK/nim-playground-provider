@@ -1,11 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import {
   buildCatalog,
   INTEGRATE_MODELS_URL,
   isTextCapable,
   resolveModelRoute,
+  resolveNamespace,
   slugCandidates,
-} from "../src/catalog";
+} from "../src/catalog.ts";
 
 test("isTextCapable keeps LLMs and vision-language, drops non-text", () => {
   expect(isTextCapable("z-ai/glm-5.2")).toBe(true);
@@ -79,11 +80,11 @@ test("buildCatalog uses the queue functionId and filters non-text", async () => 
     return new Response("not found", { status: 404 });
   };
 
-  const catalog = await buildCatalog({
+  const result = await buildCatalog({
     fetchImpl: fetchImpl as typeof fetch,
     concurrency: 2,
   });
-  expect(catalog).toEqual([
+  expect(result.entries).toEqual([
     {
       id: "z-ai/glm-5.2",
       slug: "glm-5.2",
@@ -92,6 +93,7 @@ test("buildCatalog uses the queue functionId and filters non-text", async () => 
       ownedBy: "z-ai",
     },
   ]);
+  expect(result.refreshMs).toBe(6 * 60 * 60 * 1000);
 });
 
 test("buildCatalog propagates integrate-list failure", async () => {
@@ -124,4 +126,23 @@ test("resolveModelRoute returns null when the queue probe fails", async () => {
     fetchImpl as typeof fetch,
   );
   expect(res).toBeNull();
+});
+
+test("resolveNamespace extracts the namespace from the model page", async () => {
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    if (u === "https://build.nvidia.com/z-ai/glm-5.2") {
+      return new Response(
+        `{"props":{"pageProps":{"deployment":{"functionId":"f1","\\"namespace\\":\\"abc123\\""}}}}`,
+        { status: 200 },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
+  expect(await resolveNamespace(fetchImpl as typeof fetch)).toBe("abc123");
+});
+
+test("resolveNamespace returns null when the page is unreachable", async () => {
+  const fetchImpl = async () => new Response("boom", { status: 502 });
+  expect(await resolveNamespace(fetchImpl as typeof fetch)).toBeNull();
 });

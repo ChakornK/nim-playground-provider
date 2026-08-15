@@ -3,13 +3,14 @@
 // plus per-model function IDs from the queue endpoint.
 
 import {
+  env,
   NAMESPACE,
   ORIGIN,
   REFERER,
   UPSTREAM_BASE,
   USER_AGENT,
-} from "./constants";
-import type { CatalogEntry, ModelRoute } from "./types";
+} from "./constants.ts";
+import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
@@ -21,8 +22,16 @@ type CatalogFetch = (
   init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<Response>;
 
+// Deployment namespace, resolved from the model page HTML at startup and
+// falling back to the static default when the page is unreachable.
+let namespace = NAMESPACE;
+
+export function setNamespace(ns: string): void {
+  namespace = ns;
+}
+
 const queueUrl = (slug: string) =>
-  `${UPSTREAM_BASE}/queues/models/${NAMESPACE}/${slug}`;
+  `${UPSTREAM_BASE}/queues/models/${namespace}/${slug}`;
 
 const QUEUE_HEADERS = {
   "user-agent": USER_AGENT,
@@ -112,24 +121,62 @@ export async function resolveModelRoute(
 ): Promise<ModelRoute | null> {
   for (const slug of slugCandidates(id)) {
     const functionId = await probeFunctionId(slug, fetchImpl);
-    if (functionId) return { modelId: `${NAMESPACE}/${slug}`, functionId };
+    if (functionId) return { modelId: `${namespace}/${slug}`, functionId };
   }
   return null;
 }
 
 /**
+ * Extract the deploy namespace from the model page HTML. The page embeds it as
+ * a JSON field in the initial data blob. Returns null when the page is
+ * unreachable or the field is absent.
+ */
+export async function resolveNamespace(
+  fetchImpl: CatalogFetch = fetch,
+): Promise<string | null> {
+  try {
+    const r = await fetchImpl(`https://build.nvidia.com/${env.model}`, {
+      headers: { "user-agent": USER_AGENT },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) return null;
+    const html = await r.text();
+    return html.match(/\\"namespace\\":\\"([a-z0-9]+)\\"/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Fallback catalog refresh interval when the response has no Cache-Control.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+export interface CatalogResult {
+  entries: CatalogEntry[];
+  refreshMs: number;
+}
+
+function parseMaxAge(cc: string | null): number | null {
+  if (!cc) return null;
+  const m = cc.match(/max-age=(\d+)/i);
+  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
+}
+
+/**
  * Fetch the servable catalog. Throws if the integrate list itself is
  * unreachable; individual queue probes that fail are skipped silently.
+ * Returns entries plus a refresh interval derived from the response Cache-Control.
  */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
-}): Promise<CatalogEntry[]> {
+}): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const r = await fetchImpl(INTEGRATE_MODELS_URL, {
     headers: { "user-agent": USER_AGENT },
   });
   if (!r.ok) throw new Error(`integrate model list ${r.status}`);
+  const refreshMs =
+    parseMaxAge(r.headers.get("cache-control")) ?? DEFAULT_REFRESH_MS;
   const list = (await r.json()) as {
     data: Array<{ id: string; created: number; owned_by: string }>;
   };
@@ -138,7 +185,7 @@ export async function buildCatalog(opts?: {
 
   const entries = await mapPool(
     list.data,
-    opts?.concurrency ?? 12,
+    opts?.concurrency ?? 4,
     async (m) => {
       for (const slug of slugCandidates(m.id)) {
         const functionId = await probeFunctionId(slug, fetchImpl);
@@ -155,7 +202,8 @@ export async function buildCatalog(opts?: {
     },
   );
 
-  return entries
+  const sorted = entries
     .filter((e): e is CatalogEntry => e !== null && isTextCapable(e.id))
     .sort((a, b) => a.id.localeCompare(b.id));
+  return { entries: sorted, refreshMs };
 }

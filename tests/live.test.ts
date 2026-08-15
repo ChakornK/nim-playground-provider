@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test";
-import { BrowserSession } from "../src/browser";
-import { resolveModelRoute } from "../src/catalog";
-import { env } from "../src/constants";
-import { createServer } from "../src/server";
-import { TokenPool } from "../src/token-pool";
-import { Upstream } from "../src/upstream";
+import { expect, test } from "vitest";
+import { BrowserSession } from "../src/browser.ts";
+import { resolveModelRoute } from "../src/catalog.ts";
+import { env } from "../src/constants.ts";
+import { createServer } from "../src/server.ts";
+import { TokenPool } from "../src/token-pool.ts";
+import { Upstream } from "../src/upstream.ts";
 
 const LIVE = !!process.env.NVIDIA_LIVE;
 
@@ -14,10 +14,10 @@ const route = () => resolveModelRoute(env.model);
 test.skipIf(!LIVE)(
   "live: streaming completion shows reasoning then content and terminates with [DONE]",
   async () => {
-    const session = new BrowserSession({ executablePath: env.chromiumPath });
+    const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,
@@ -51,10 +51,10 @@ test.skipIf(!LIVE)(
 test.skipIf(!LIVE)(
   "live: tool call comes back as structured delta.tool_calls (not <tool_call> XML text)",
   async () => {
-    const session = new BrowserSession({ executablePath: env.chromiumPath });
+    const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,
@@ -110,10 +110,10 @@ test.skipIf(!LIVE)(
 test.skipIf(!LIVE)(
   "live: non-streaming completion returns an aggregated chat.completion",
   async () => {
-    const session = new BrowserSession({ executablePath: env.chromiumPath });
+    const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
     const pool = new TokenPool(session, 1);
     const upstream = new Upstream();
-    const server = createServer({
+    const server = await createServer({
       pool,
       upstream,
       model: env.model,

@@ -1,16 +1,28 @@
-import { BrowserSession } from "./browser";
-import { buildCatalog, resolveModelRoute } from "./catalog";
-import { env } from "./constants";
-import { createServer } from "./server";
-import { TokenPool } from "./token-pool";
-import type { CatalogEntry, ModelRoute } from "./types";
-import { Upstream } from "./upstream";
+import { BrowserSession } from "./browser.ts";
+import {
+  buildCatalog,
+  resolveModelRoute,
+  resolveNamespace,
+  setNamespace,
+} from "./catalog.ts";
+import { detectLightpanda, env } from "./constants.ts";
+import { createServer } from "./server.ts";
+import { TokenPool } from "./token-pool.ts";
+import type { CatalogEntry, ModelRoute } from "./types.ts";
+import { Upstream } from "./upstream.ts";
 
-const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
-
-const session = new BrowserSession({ executablePath: env.chromiumPath });
+const lightpandaPath = detectLightpanda();
+const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
+
+// Resolve the deploy namespace from the model page HTML; the default is kept
+// when the page is unreachable.
+const resolvedNs = await resolveNamespace();
+if (resolvedNs) {
+  setNamespace(resolvedNs);
+  console.log(`nim-playground-provider: resolved namespace ${resolvedNs}`);
+}
 
 // Resolve the default route first so the proxy serves immediately even if the
 // full catalog takes time to build or NVIDIA's list is unreachable.
@@ -26,30 +38,42 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is best-effort: built in the background so boot never blocks on
-// NVIDIA, refreshed on a TTL so the model list does not go stale.
+// Catalog is fetched lazily on first /v1/models request to keep startup light.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];
+let catalogState: "idle" | "fetching" | "ready" = "idle";
+let catalogRefreshMs = DEFAULT_REFRESH_MS;
 const refreshCatalog = async () => {
+  if (catalogState === "fetching") return;
+  catalogState = "fetching";
   try {
-    catalog = await buildCatalog();
+    const result = await buildCatalog();
+    catalog = result.entries;
+    catalogRefreshMs = result.refreshMs;
+    catalogState = "ready";
     console.log(
       `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
+    setInterval(refreshCatalog, catalogRefreshMs);
   } catch (e) {
+    catalogState = "idle";
     console.warn(
       `nim-playground-provider: catalog refresh failed (${(e as Error).message})`,
     );
   }
 };
-void refreshCatalog().then(() =>
-  setInterval(refreshCatalog, CATALOG_REFRESH_MS),
-);
+const getCatalog = () => {
+  if (catalogState === "idle") void refreshCatalog();
+  return catalog;
+};
 
-const server = createServer({
+pool.prewarm();
+
+const server = await createServer({
   pool,
   upstream,
   model: env.model,
-  getCatalog: () => catalog,
+  getCatalog,
   defaultRoute,
 });
 

@@ -27,11 +27,20 @@ export class TokenPool {
   private waiting: Waiter[] = [];
   private rearming = false;
 
-  constructor(
-    private source: TokenSource,
-    private capacity = 2,
-    private opts: TokenPoolOpts = {},
-  ) {}
+  private source: TokenSource;
+  private capacity: number;
+  private opts: TokenPoolOpts;
+
+  constructor(source: TokenSource, capacity = 2, opts: TokenPoolOpts = {}) {
+    this.source = source;
+    this.capacity = capacity;
+    this.opts = opts;
+  }
+
+  /** Start background refilling immediately, without blocking. */
+  prewarm() {
+    this.scheduleRefill();
+  }
 
   /** Take a token, blocking until one is available (warm or freshly minted). */
   async acquire(): Promise<string> {

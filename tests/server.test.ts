@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createServer, type ServerDeps } from "../src/server";
-import type { TokenPool } from "../src/token-pool";
-import type { CatalogEntry, UpstreamChatParams } from "../src/types";
-import type { Upstream } from "../src/upstream";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import {
+  createServer,
+  type ServerDeps,
+  type ServerInstance,
+} from "../src/server.ts";
+import type { TokenPool } from "../src/token-pool.ts";
+import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";
+import type { Upstream } from "../src/upstream.ts";
 
 const fixture = () =>
   readFileSync(join(__dirname, "fixtures", "upstream.sse"), "utf8");
@@ -61,11 +65,11 @@ const deps: ServerDeps = {
   defaultRoute: { modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fid" },
 };
 
-let server: ReturnType<typeof createServer>;
+let server: ServerInstance;
 let base: string;
 
-beforeAll(() => {
-  server = createServer(deps);
+beforeAll(async () => {
+  server = await createServer(deps);
   base = `http://localhost:${server.port}`;
 });
 afterAll(() => server.stop(true));
@@ -99,7 +103,7 @@ test("unknown route returns 404 OpenAI error", async () => {
 
 test("no route available returns 503 without consuming a token", async () => {
   let acquired = 0;
-  const noRoute = createServer({
+  const noRoute = await createServer({
     pool: {
       async acquire() {
         acquired++;
@@ -129,7 +133,7 @@ test("no route available returns 503 without consuming a token", async () => {
 });
 
 test("upstream throw maps to 502 upstream_error", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     upstream: {
       async chat() {
@@ -153,7 +157,7 @@ test("upstream throw maps to 502 upstream_error", async () => {
 });
 
 test("upstream non-OK maps to 502 with upstream status", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     upstream: {
       async chat() {
@@ -178,7 +182,7 @@ test("upstream non-OK maps to 502 with upstream status", async () => {
 });
 
 test("mint failure maps to 503 server_error", async () => {
-  const s = createServer({
+  const s = await createServer({
     ...deps,
     pool: {
       async acquire() {
@@ -202,6 +206,87 @@ test("mint failure maps to 503 server_error", async () => {
   }
 });
 
+test("expired captcha token retries with a fresh token", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) {
+          return new Response('{"error":"Invalid captcha token"}', {
+            status: 400,
+          });
+        }
+        lastParams = params;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-retry",
+            object: "chat.completion",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    } as unknown as Upstream,
+    pool: {
+      async acquire() {
+        return "P1_retry_token";
+      },
+    } as unknown as TokenPool,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(lastParams?.token).toBe("P1_retry_token");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("non-captcha upstream errors are not retried", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        calls++;
+        return new Response("rate limited", { status: 429 });
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(502);
+    expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("POST /v1/chat/completions with empty messages returns 400", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
@@ -213,13 +298,17 @@ test("POST /v1/chat/completions with empty messages returns 400", async () => {
   expect(body.error.type).toBe("invalid_request_error");
 });
 
-test("POST /v1/chat/completions with non-string content returns 400", async () => {
+test("POST /v1/chat/completions normalizes null content to empty string", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messages: [{ role: "user", content: 5 }] }),
+    body: JSON.stringify({
+      stream: false,
+      messages: [{ role: "user", content: null }],
+    }),
   });
-  expect(r.status).toBe(400);
+  expect(r.status).toBe(200);
+  expect(lastParams?.messages[0]?.content).toBe("");
 });
 
 test("streaming completion passes translated SSE through and burns one token", async () => {
@@ -357,13 +446,13 @@ describe("with a catalog", () => {
       ownedBy: "thinkingmachines",
     },
   ];
-  let catServer: ReturnType<typeof createServer>;
+  let catServer: ServerInstance;
   let catBase: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     chatCalls = 0;
     lastParams = null;
-    catServer = createServer({
+    catServer = await createServer({
       ...deps,
       upstream: upstreamMock(),
       catalog,
@@ -433,7 +522,7 @@ describe("with a catalog", () => {
 
 test("server reads the catalog from a mutable provider", async () => {
   let current: CatalogEntry[] = [];
-  const catServer = createServer({
+  const catServer = await createServer({
     ...deps,
     getCatalog: () => current,
     upstream: {
