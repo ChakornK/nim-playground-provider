@@ -4,6 +4,7 @@ import {
   INTEGRATE_MODELS_URL,
   isTextCapable,
   resolveModelRoute,
+  resolveNamespace,
   slugCandidates,
 } from "../src/catalog.ts";
 
@@ -125,4 +126,23 @@ test("resolveModelRoute returns null when the queue probe fails", async () => {
     fetchImpl as typeof fetch,
   );
   expect(res).toBeNull();
+});
+
+test("resolveNamespace extracts the namespace from the model page", async () => {
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    if (u === "https://build.nvidia.com/z-ai/glm-5.2") {
+      return new Response(
+        `{"props":{"pageProps":{"deployment":{"functionId":"f1","\\"namespace\\":\\"abc123\\""}}}}`,
+        { status: 200 },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
+  expect(await resolveNamespace(fetchImpl as typeof fetch)).toBe("abc123");
+});
+
+test("resolveNamespace returns null when the page is unreachable", async () => {
+  const fetchImpl = async () => new Response("boom", { status: 502 });
+  expect(await resolveNamespace(fetchImpl as typeof fetch)).toBeNull();
 });

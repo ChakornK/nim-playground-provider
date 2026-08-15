@@ -1,5 +1,10 @@
 import { BrowserSession } from "./browser.ts";
-import { buildCatalog, resolveModelRoute } from "./catalog.ts";
+import {
+  buildCatalog,
+  resolveModelRoute,
+  resolveNamespace,
+  setNamespace,
+} from "./catalog.ts";
 import { env } from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
@@ -9,6 +14,14 @@ import { Upstream } from "./upstream.ts";
 const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
+
+// Resolve the deploy namespace from the model page HTML; the default is kept
+// when the page is unreachable.
+const resolvedNs = await resolveNamespace();
+if (resolvedNs) {
+  setNamespace(resolvedNs);
+  console.log(`nim-playground-provider: resolved namespace ${resolvedNs}`);
+}
 
 // Resolve the default route first so the proxy serves immediately even if the
 // full catalog takes time to build or NVIDIA's list is unreachable.

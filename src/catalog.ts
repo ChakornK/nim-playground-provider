@@ -3,6 +3,7 @@
 // plus per-model function IDs from the queue endpoint.
 
 import {
+  env,
   NAMESPACE,
   ORIGIN,
   REFERER,
@@ -21,8 +22,16 @@ type CatalogFetch = (
   init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<Response>;
 
+// Deployment namespace, resolved from the model page HTML at startup and
+// falling back to the static default when the page is unreachable.
+let namespace = NAMESPACE;
+
+export function setNamespace(ns: string): void {
+  namespace = ns;
+}
+
 const queueUrl = (slug: string) =>
-  `${UPSTREAM_BASE}/queues/models/${NAMESPACE}/${slug}`;
+  `${UPSTREAM_BASE}/queues/models/${namespace}/${slug}`;
 
 const QUEUE_HEADERS = {
   "user-agent": USER_AGENT,
@@ -112,9 +121,30 @@ export async function resolveModelRoute(
 ): Promise<ModelRoute | null> {
   for (const slug of slugCandidates(id)) {
     const functionId = await probeFunctionId(slug, fetchImpl);
-    if (functionId) return { modelId: `${NAMESPACE}/${slug}`, functionId };
+    if (functionId) return { modelId: `${namespace}/${slug}`, functionId };
   }
   return null;
+}
+
+/**
+ * Extract the deploy namespace from the model page HTML. The page embeds it as
+ * a JSON field in the initial data blob. Returns null when the page is
+ * unreachable or the field is absent.
+ */
+export async function resolveNamespace(
+  fetchImpl: CatalogFetch = fetch,
+): Promise<string | null> {
+  try {
+    const r = await fetchImpl(`https://build.nvidia.com/${env.model}`, {
+      headers: { "user-agent": USER_AGENT },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) return null;
+    const html = await r.text();
+    return html.match(/\\"namespace\\":\\"([a-z0-9]+)\\"/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // Fallback catalog refresh interval when the response has no Cache-Control.
