@@ -217,13 +217,17 @@ test("POST /v1/chat/completions with empty messages returns 400", async () => {
   expect(body.error.type).toBe("invalid_request_error");
 });
 
-test("POST /v1/chat/completions with non-string content returns 400", async () => {
+test("POST /v1/chat/completions normalizes null content to empty string", async () => {
   const r = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messages: [{ role: "user", content: 5 }] }),
+    body: JSON.stringify({
+      stream: false,
+      messages: [{ role: "user", content: null }],
+    }),
   });
-  expect(r.status).toBe(400);
+  expect(r.status).toBe(200);
+  expect(lastParams?.messages[0]?.content).toBe("");
 });
 
 test("streaming completion passes translated SSE through and burns one token", async () => {

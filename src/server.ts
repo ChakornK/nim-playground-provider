@@ -148,12 +148,11 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     if (!body) {
       return errorJson("messages must be a non-empty array", 400);
     }
-    if (
-      body.messages.some(
-        (m) => !m?.role || (m.content != null && typeof m.content !== "string"),
-      )
-    ) {
-      return errorJson("each message must have a string content", 400);
+    if (body.messages.some((m) => !m?.role)) {
+      return errorJson("each message must have a role", 400);
+    }
+    for (const m of body.messages) {
+      if (m.content == null) m.content = "";
     }
 
     const stream = body.stream !== false;
