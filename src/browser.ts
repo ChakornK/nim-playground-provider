@@ -14,6 +14,16 @@ const HCAPTCHA_API =
 const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
 const HCAPTCHA_SITEKEY = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 
+// Build a Chrome UA from the CDP-reported version; falls back to the static
+// UA when the version string is missing or malformed.
+function userAgentFromVersion(cdpBrowser: string): string {
+  const match = cdpBrowser.match(/Chrome\/(\d+\.\d+\.\d+\.\d+)/);
+  if (match) {
+    return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${match[1]} Safari/537.36`;
+  }
+  return USER_AGENT;
+}
+
 const CDP_READY_TIMEOUT_MS = 15_000;
 
 const MINT_ATTEMPTS = 3;
@@ -128,21 +138,24 @@ export class BrowserSession {
 
     // Wait for the CDP endpoint before connecting.
     const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
-    let ready = false;
+    let cdpVersion: string | null = null;
     while (Date.now() < deadline) {
       try {
         const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
         if (r.ok) {
-          ready = true;
+          const v = (await r.json()) as { Browser?: string };
+          cdpVersion = v.Browser ?? null;
           break;
         }
       } catch {}
       await new Promise((r) => setTimeout(r, 200));
     }
-    if (!ready) throw new Error("lightpanda CDP endpoint not ready");
+    if (!cdpVersion) throw new Error("lightpanda CDP endpoint not ready");
 
     this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    this.context = await this.browser.newContext({ userAgent: USER_AGENT });
+    this.context = await this.browser.newContext({
+      userAgent: userAgentFromVersion(cdpVersion),
+    });
     this.page = await this.context.newPage();
     await this.page.goto(blankOrigin(), {
       waitUntil: "domcontentloaded",
