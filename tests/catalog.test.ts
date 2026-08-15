@@ -79,11 +79,11 @@ test("buildCatalog uses the queue functionId and filters non-text", async () => 
     return new Response("not found", { status: 404 });
   };
 
-  const catalog = await buildCatalog({
+  const result = await buildCatalog({
     fetchImpl: fetchImpl as typeof fetch,
     concurrency: 2,
   });
-  expect(catalog).toEqual([
+  expect(result.entries).toEqual([
     {
       id: "z-ai/glm-5.2",
       slug: "glm-5.2",
@@ -92,6 +92,7 @@ test("buildCatalog uses the queue functionId and filters non-text", async () => 
       ownedBy: "z-ai",
     },
   ]);
+  expect(result.refreshMs).toBe(6 * 60 * 60 * 1000);
 });
 
 test("buildCatalog propagates integrate-list failure", async () => {

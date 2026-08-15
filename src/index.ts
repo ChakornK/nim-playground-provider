@@ -6,8 +6,6 @@ import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 import { Upstream } from "./upstream.ts";
 
-const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
-
 const session = new BrowserSession({ lightpandaPath: env.lightpandaPath });
 const pool = new TokenPool(session, env.poolSize);
 const upstream = new Upstream();
@@ -27,18 +25,22 @@ if (defaultRoute) {
 }
 
 // Catalog is fetched lazily on first /v1/models request to keep startup light.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
+let catalogRefreshMs = DEFAULT_REFRESH_MS;
 const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
   try {
-    catalog = await buildCatalog();
+    const result = await buildCatalog();
+    catalog = result.entries;
+    catalogRefreshMs = result.refreshMs;
     catalogState = "ready";
     console.log(
       `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
-    setInterval(refreshCatalog, CATALOG_REFRESH_MS);
+    setInterval(refreshCatalog, catalogRefreshMs);
   } catch (e) {
     catalogState = "idle";
     console.warn(

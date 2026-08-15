@@ -117,19 +117,36 @@ export async function resolveModelRoute(
   return null;
 }
 
+// Fallback catalog refresh interval when the response has no Cache-Control.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+export interface CatalogResult {
+  entries: CatalogEntry[];
+  refreshMs: number;
+}
+
+function parseMaxAge(cc: string | null): number | null {
+  if (!cc) return null;
+  const m = cc.match(/max-age=(\d+)/i);
+  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
+}
+
 /**
  * Fetch the servable catalog. Throws if the integrate list itself is
  * unreachable; individual queue probes that fail are skipped silently.
+ * Returns entries plus a refresh interval derived from the response Cache-Control.
  */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
-}): Promise<CatalogEntry[]> {
+}): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const r = await fetchImpl(INTEGRATE_MODELS_URL, {
     headers: { "user-agent": USER_AGENT },
   });
   if (!r.ok) throw new Error(`integrate model list ${r.status}`);
+  const refreshMs =
+    parseMaxAge(r.headers.get("cache-control")) ?? DEFAULT_REFRESH_MS;
   const list = (await r.json()) as {
     data: Array<{ id: string; created: number; owned_by: string }>;
   };
@@ -155,7 +172,8 @@ export async function buildCatalog(opts?: {
     },
   );
 
-  return entries
+  const sorted = entries
     .filter((e): e is CatalogEntry => e !== null && isTextCapable(e.id))
     .sort((a, b) => a.id.localeCompare(b.id));
+  return { entries: sorted, refreshMs };
 }
