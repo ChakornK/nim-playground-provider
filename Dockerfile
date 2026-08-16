@@ -2,7 +2,7 @@
 FROM node:26-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=dev --omit=peer
 COPY src ./src
 COPY tsconfig.json ./
 # Reference official lightpanda/browser image in build stage
