@@ -1,6 +1,6 @@
 {
   "name": "nim-playground-provider",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Chakorn Kungsanarux <chakornk2007@gmail.com>",
   "license": "MIT",
   "module": "index.ts",
