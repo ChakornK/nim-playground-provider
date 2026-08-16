@@ -718,3 +718,123 @@ describe("parseKeys", () => {
     }
   });
 });
+
+describe("bearer key auth", () => {
+  test("401 identical body for missing header, wrong scheme, and wrong key", async () => {
+    const s = await createServer({ ...deps, apiKeys: ["k"] });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const cases: Array<[string, Record<string, string> | undefined]> = [
+        ["no header", undefined],
+        ["Basic", { authorization: "Basic k" }],
+        ["wrong key", { authorization: "Bearer wrong" }],
+      ];
+      const bodies: string[] = [];
+      for (const [, hdrs] of cases) {
+        const r = await fetch(`${base}/v1/models`, { headers: hdrs });
+        expect(r.status).toBe(401);
+        const body = await r.json();
+        expect(body.error.code).toBe("invalid_api_key");
+        bodies.push(JSON.stringify(body));
+      }
+      expect(new Set(bodies).size).toBe(1);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("authorized request reaches /v1/models and /v1/chat/completions", async () => {
+    const s = await createServer({ ...deps, apiKeys: ["k"] });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const m = await fetch(`${base}/v1/models`, {
+        headers: { authorization: "Bearer k" },
+      });
+      expect(m.status).toBe(200);
+      const c = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer k",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+          stream: false,
+        }),
+      });
+      expect(c.status).toBe(200);
+      const completion = await c.json();
+      expect(completion.object).toBe("chat.completion");
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("OPTIONS passes without a key while auth enabled", async () => {
+    const s = await createServer({ ...deps, apiKeys: ["k"] });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const r = await fetch(`${base}/v1/models`, { method: "OPTIONS" });
+      expect(r.status).toBe(204);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("unauthorized request does not consume a token", async () => {
+    let acquired = 0;
+    const s = await createServer({
+      ...deps,
+      apiKeys: ["k"],
+      pool: {
+        async acquire() {
+          acquired++;
+          return "P1_unused";
+        },
+      } as unknown as TokenPool,
+    });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const r = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer wrong",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(r.status).toBe(401);
+      expect(acquired).toBe(0);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("disabled auth keeps no-header responses unchanged", async () => {
+    const s = await createServer({ ...deps, apiKeys: [] });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const m = await fetch(`${base}/v1/models`);
+      expect(m.status).toBe(200);
+      const n = await fetch(`${base}/nope`, { method: "POST" });
+      expect(n.status).toBe(404);
+      const body = await n.json();
+      expect(body.error.type).toBe("not_found");
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("the last configured key is accepted", async () => {
+    const s = await createServer({ ...deps, apiKeys: ["a", "b", "c"] });
+    const base = `http://localhost:${s.port}`;
+    try {
+      const r = await fetch(`${base}/v1/models`, {
+        headers: { authorization: "Bearer c" },
+      });
+      expect(r.status).toBe(200);
+    } finally {
+      await s.stop(true);
+    }
+  });
+});
