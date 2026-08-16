@@ -1,13 +1,13 @@
 {
   "name": "nim-playground-provider",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Chakorn Kungsanarux <chakornk2007@gmail.com>",
   "license": "MIT",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node --experimental-strip-types --max-old-space-size=96 src/index.ts",
+    "start": "node --experimental-strip-types --max-old-space-size=256 src/index.ts",
     "format": "prettier --write .",
     "lint": "biome lint --write .",
     "test": "vitest run",
