@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { parseKeys } from "../src/constants.ts";
 import {
   createServer,
+  isAuthorized,
+  safeEqual,
   type ServerDeps,
   type ServerInstance,
 } from "../src/server.ts";
@@ -599,4 +602,119 @@ test("server reads the catalog from a mutable provider", async () => {
   } finally {
     await catServer.stop(true);
   }
+});
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function randStr(rng: () => number, max = 12): string {
+  const n = Math.floor(rng() * max) + 1;
+  let s = "";
+  for (let i = 0; i < n; i++) {
+    if (rng() < 0.3) s += String.fromCharCode(0xa0 + Math.floor(rng() * 0x500));
+    else s += String.fromCharCode(32 + Math.floor(rng() * 95));
+  }
+  return s;
+}
+
+function randAscii(rng: () => number, max = 10): string {
+  const n = Math.floor(rng() * max) + 1;
+  let s = "";
+  for (let i = 0; i < n; i++)
+    s += String.fromCharCode(32 + Math.floor(rng() * 95));
+  return s;
+}
+
+describe("safeEqual", () => {
+  test("agrees with strict equality and never throws", () => {
+    const rng = mulberry32(1234);
+    for (let i = 0; i < 80; i++) {
+      const a = randStr(rng);
+      const b = rng() < 0.5 ? a : randStr(rng);
+      let threw = false;
+      let got: boolean | undefined;
+      try {
+        got = safeEqual(a, b);
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(false);
+      expect(got).toBe(a === b);
+    }
+  });
+});
+
+const AUTH_SCHEMES = ["Bearer", "bearer", "BEARER", "BeArEr"];
+
+describe("isAuthorized", () => {
+  test("membership with case-insensitive scheme; empty set disables auth", () => {
+    const rng = mulberry32(99);
+    for (let i = 0; i < 80; i++) {
+      const nkeys = Math.floor(rng() * 3) + 1;
+      const keys = Array.from({ length: nkeys }, () => randAscii(rng, 10));
+      const inSet = rng() < 0.5;
+      const token = inSet
+        ? (keys[Math.floor(rng() * nkeys)] ?? randAscii(rng, 10))
+        : randAscii(rng, 10);
+      const scheme = AUTH_SCHEMES[Math.floor(rng() * AUTH_SCHEMES.length)];
+      const pad = rng() < 0.5 ? " " : "  ";
+      const req = new Request("http://x/v1/models", {
+        headers: { authorization: `${scheme}${pad}${token}${pad}` },
+      });
+      expect(isAuthorized(req, keys)).toBe(keys.includes(token));
+      expect(isAuthorized(req, [])).toBe(true);
+    }
+  });
+
+  test("missing header and non-bearer schemes are rejected", () => {
+    const rng = mulberry32(7);
+    const keys = ["k1"];
+    for (let i = 0; i < 24; i++) {
+      const bad = ["Basic", "Token", "bearer-x", ""][Math.floor(rng() * 4)];
+      const req =
+        bad === ""
+          ? new Request("http://x")
+          : new Request("http://x", {
+              headers: { authorization: `${bad} ${randAscii(rng, 6)}` },
+            });
+      expect(isAuthorized(req, keys)).toBe(false);
+    }
+  });
+});
+
+describe("parseKeys", () => {
+  test("equals split-trim-filter", () => {
+    const rng = mulberry32(42);
+    const ref = (s: string) =>
+      s
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
+    expect(parseKeys("")).toEqual([]);
+    expect(parseKeys(",")).toEqual([]);
+    expect(parseKeys(", ,")).toEqual([]);
+    expect(parseKeys(" a , b ,c")).toEqual(["a", "b", "c"]);
+    expect(parseKeys("secret1, secret2 ,secret3")).toEqual([
+      "secret1",
+      "secret2",
+      "secret3",
+    ]);
+    for (let i = 0; i < 80; i++) {
+      const nk = Math.floor(rng() * 4) + 1;
+      const parts = Array.from({ length: nk }, () => {
+        const seg = rng() < 0.25 ? "" : randStr(rng, 8);
+        return (rng() < 0.3 ? " " : "") + seg + (rng() < 0.3 ? " " : "");
+      });
+      const raw = parts.join(",");
+      expect(parseKeys(raw)).toEqual(ref(raw));
+    }
+  });
 });
