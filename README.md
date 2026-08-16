@@ -25,13 +25,25 @@ curl http://localhost:8787/v1/chat/completions \
 
 All settings use environment variables. None are required.
 
-| Variable          | Default         | Purpose                                                 |
-| ----------------- | --------------- | ------------------------------------------------------- |
-| `PORT`            | `8787`          | Listen port                                             |
-| `HOST`            | `127.0.0.1`     | Bind address (localhost by default)                     |
-| `POOL_SIZE`       | `2`             | Pre-minted hCaptcha tokens to keep warm                 |
-| `LIGHTPANDA_PATH` | (auto-detected) | Path to the Lightpanda binary, overrides PATH detection |
-| `MODEL`           | `z-ai/glm-5.2`  | Fallback model name                                     |
+| Variable          | Default         | Purpose                                                   |
+| ----------------- | --------------- | --------------------------------------------------------- |
+| `PORT`            | `8787`          | Listen port                                               |
+| `HOST`            | `127.0.0.1`     | Bind address (localhost by default)                       |
+| `POOL_SIZE`       | `2`             | Pre-minted hCaptcha tokens to keep warm                   |
+| `LIGHTPANDA_PATH` | (auto-detected) | Path to the Lightpanda binary, overrides PATH detection   |
+| `MODEL`           | `z-ai/glm-5.2`  | Fallback model name                                       |
+| `API_KEY`         | (unset)         | Comma-separated bearer keys; empty or unset disables auth |
+
+## Authentication
+
+By default the proxy requires no key. Set `API_KEY` to one or more secret keys, separated by commas, and every request must carry one in its `Authorization` header. Leave `API_KEY` unset to disable authentication. 
+
+```bash
+API_KEY=secret1,secret2 npm start
+curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
 
 ## API
 
@@ -53,7 +65,7 @@ NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This pro
 
 ```bash
 docker build -t nim-playground-provider .
-docker run -p 8787:8787 nim-playground-provider
+docker run -e API_KEY=secret1 -p 8787:8787 nim-playground-provider
 ```
 
 The container bundles Lightpanda and uses the same environment variables as local execution.
