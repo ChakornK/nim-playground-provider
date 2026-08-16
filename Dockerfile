@@ -1,5 +1,5 @@
 # Build stage
-FROM node:22-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -9,15 +9,12 @@ COPY tsconfig.json ./
 COPY --from=lightpanda/browser /usr/bin/lightpanda /usr/bin/lightpanda
 RUN test -x /usr/bin/lightpanda
 
-# Runtime stage (glibc-based; lightpanda binary links against glibc, not musl)
-FROM node:22-bookworm-slim AS runtime
+# Runtime stage: distroless bundles node 26 and CA certificates, and lightpanda
+# links against glibc (debian 13 is trixie).
+FROM gcr.io/distroless/nodejs26-debian13 AS runtime
 WORKDIR /app
 # Copy binary from build stage
 COPY --from=build /usr/bin/lightpanda /usr/bin/lightpanda
-RUN test -x /usr/bin/lightpanda
-# lightpanda fails without CA certificates
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy production artifacts
 COPY --from=build /app/src ./src
@@ -32,4 +29,5 @@ ENV MODEL=z-ai/glm-5.2
 
 EXPOSE 8787
 
-CMD ["node", "--experimental-strip-types", "--max-old-space-size=96", "src/index.ts"]
+# The distroless image sets ENTRYPOINT to node; remaining args go to node.
+CMD ["--experimental-strip-types", "--max-old-space-size=96", "src/index.ts"]
