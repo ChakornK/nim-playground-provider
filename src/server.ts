@@ -152,6 +152,13 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") return new Response(null, { status: 204 });
 
+    if (req.method === "GET" && url.pathname === "/health") {
+      return new Response("OK", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+
     if (apiKeys.length > 0 && !isAuthorized(req, apiKeys)) {
       return errorJson(
         "Invalid API key",
