@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import {
   createServer as httpCreate,
   type IncomingMessage,
@@ -16,6 +17,8 @@ export interface ServerDeps {
   pool: TokenPool;
   upstream: Upstream;
   model?: string;
+  /** Allowed bearer keys; when omitted, falls back to env.apiKeys. Empty array disables auth. */
+  apiKeys?: string[];
   port?: number;
   host?: string;
   /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
@@ -67,7 +70,29 @@ const errorJson = (
   message: string,
   status: number,
   type = "invalid_request_error",
-) => json({ error: { message, type, code: type } }, status);
+  code = type,
+) => json({ error: { message, type, code } }, status);
+
+export function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) {
+    void timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
+}
+
+export function isAuthorized(req: Request, keys: string[]): boolean {
+  if (keys.length === 0) return true;
+  const auth = req.headers.get("authorization");
+  const m = auth ? /^bearer\s+(.+)$/i.exec(auth) : null;
+  if (!m) return false;
+  const token = (m[1] ?? "").trim();
+  let ok = false;
+  for (const k of keys) if (safeEqual(token, k)) ok = true;
+  return ok;
+}
 
 /** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
 function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
@@ -117,6 +142,7 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
 
 export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const model = deps.model ?? env.model;
+  const apiKeys = deps.apiKeys ?? env.apiKeys;
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
 
@@ -125,6 +151,15 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") return new Response(null, { status: 204 });
+
+    if (apiKeys.length > 0 && !isAuthorized(req, apiKeys)) {
+      return errorJson(
+        "Invalid API key",
+        401,
+        "invalid_request_error",
+        "invalid_api_key",
+      );
+    }
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
       const catalog = getCatalog();

@@ -33,10 +33,18 @@ export function detectLightpanda(): string {
   );
 }
 
+export function parseKeys(rawValue: string): string[] {
+  return rawValue
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
 export const env = {
   port: num(process.env.PORT, 8787),
   poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
   lightpandaPath: process.env.LIGHTPANDA_PATH,
   model: process.env.MODEL ?? DEFAULT_MODEL,
   host: process.env.HOST ?? "127.0.0.1",
+  apiKeys: parseKeys(process.env.API_KEY ?? ""),
 };
