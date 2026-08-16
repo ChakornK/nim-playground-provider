@@ -15,6 +15,9 @@ WORKDIR /app
 # Copy binary from build stage
 COPY --from=build /usr/bin/lightpanda /usr/bin/lightpanda
 RUN test -x /usr/bin/lightpanda
+# lightpanda fails without CA certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy production artifacts
 COPY --from=build /app/src ./src
