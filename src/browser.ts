@@ -68,6 +68,10 @@ export class BrowserSession {
   private minting: Promise<string> | null = null;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
   private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
+  // One persistent invisible hCaptcha widget. Reused via reset+execute so the
+  // page never accumulates one widget per mint (that leaked into multi-hundred-MB
+  // browser RSS under concurrent token requests).
+  private widgetId: string | null = null;
   private opts: { lightpandaPath?: string };
 
   constructor(opts: { lightpandaPath?: string } = {}) {
@@ -101,6 +105,7 @@ export class BrowserSession {
       this.browser = null;
       this.page = null;
       this.context = null;
+      this.widgetId = null;
       this.proc?.kill();
       this.proc = null;
     }
@@ -202,29 +207,38 @@ export class BrowserSession {
         document.head.appendChild(s);
       });
     }, this.hcaptchaApiUrl);
+
+    // Render one persistent invisible widget; every mint re-executes this same
+    // widget (see mintTokenInner) instead of growing a new one per mint.
+    this.widgetId = await this.page.evaluate((sitekey) => {
+      const w = window as unknown as Window & {
+        hcaptcha: { render: (id: string, o: object) => string };
+      };
+      const div = document.createElement("div");
+      div.id = "mint_widget";
+      div.style.cssText =
+        "position:fixed;left:-9999px;top:0;width:300px;height:80px";
+      document.body.appendChild(div);
+      return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
+    }, this.sitekey);
   }
 
   private async mintTokenInner(): Promise<string> {
     await this.ensureBrowser();
     const page = this.page;
     if (!page) throw new Error("no page");
+    const widgetId = this.widgetId;
+    if (!widgetId) throw new Error("no widget");
 
-    const widgetId = await page.evaluate((sitekey) => {
-      const w = window as unknown as Window & {
-        hcaptcha: { render: (id: string, o: object) => string };
-      };
-      const div = document.createElement("div");
-      div.id = `mint_${Date.now()}`;
-      div.style.cssText =
-        "position:fixed;left:10px;top:10px;width:300px;height:80px;z-index:99999";
-      document.body.appendChild(div);
-      return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
-    }, this.sitekey);
-
+    // reset + execute the persistent widget to get a fresh token
     await page.evaluate((id) => {
       const w = window as unknown as Window & {
-        hcaptcha: { execute: (id: string) => Promise<unknown> };
+        hcaptcha: {
+          reset: (id: string) => void;
+          execute: (id: string) => Promise<unknown>;
+        };
       };
+      w.hcaptcha.reset(id);
       return w.hcaptcha.execute(id);
     }, widgetId);
 

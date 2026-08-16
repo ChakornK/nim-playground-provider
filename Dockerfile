@@ -30,4 +30,7 @@ ENV MODEL=z-ai/glm-5.2
 EXPOSE 8787
 
 # The distroless image sets ENTRYPOINT to node; remaining args go to node.
-CMD ["--experimental-strip-types", "--max-old-space-size=96", "src/index.ts"]
+# Node measured 127-152MB RSS / 38-43MB heap under load; a 96MB old-space cap
+# caused V8 "heap out of memory" crashes. 256 gives headroom while the widget
+# reuse in browser.ts keeps lightpanda bounded far below the 512MB VM limit.
+CMD ["--experimental-strip-types", "--max-old-space-size=256", "src/index.ts"]

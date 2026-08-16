@@ -7,7 +7,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node --experimental-strip-types --max-old-space-size=96 src/index.ts",
+    "start": "node --experimental-strip-types --max-old-space-size=256 src/index.ts",
     "format": "prettier --write .",
     "lint": "biome lint --write .",
     "test": "vitest run",
