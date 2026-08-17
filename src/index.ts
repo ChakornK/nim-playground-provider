@@ -26,7 +26,8 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is fetched lazily on first /v1/models request to keep startup light.
+// Catalog is built eagerly at startup; /v1/models falls back to the default
+// model until the build finishes (and re-triggers if it failed).
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
@@ -35,7 +36,7 @@ const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
   try {
-    const result = await buildCatalog();
+    const result = await buildCatalog({ concurrency: 8 });
     catalog = result.entries;
     catalogRefreshMs = result.refreshMs;
     catalogState = "ready";
@@ -54,6 +55,8 @@ const getCatalog = () => {
   if (catalogState === "idle") void refreshCatalog();
   return catalog;
 };
+
+void refreshCatalog();
 
 pool.prewarm();
 
