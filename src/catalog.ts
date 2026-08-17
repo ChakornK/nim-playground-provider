@@ -1,91 +1,140 @@
-// Catalog of NVIDIA NIM models that this proxy can serve. Built at startup
-// from the public OpenAI-compatible model list (`integrate.api.nvidia.com`)
-// plus per-model function IDs from the queue endpoint.
+// Catalog of NVIDIA NIM models that this proxy can serve. The candidate ids
+// come from the public OpenAI-compatible model list (`integrate.api.nvidia.com`);
+// per model, the deploy namespace, function id and modalities are read from the
+// model page HTML on build.nvidia.com. A model is served iff its page reports
+// Text among both input and output modalities. The page's `nvcfFunctionId` is
+// the per-model value used as the `nv-function-id` request header, so no queue
+// probe is needed.
 
-import {
-  env,
-  NAMESPACE,
-  ORIGIN,
-  REFERER,
-  UPSTREAM_BASE,
-  USER_AGENT,
-} from "./constants.ts";
+import { USER_AGENT } from "./constants.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
 export const INTEGRATE_MODELS_URL =
   "https://integrate.api.nvidia.com/v1/models";
+const PAGE_ORIGIN = "https://build.nvidia.com";
 
 type CatalogFetch = (
   url: string | URL,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    headers?: Record<string, string>;
+    redirect?: RequestRedirect;
+    signal?: AbortSignal;
+  },
 ) => Promise<Response>;
 
-// Deployment namespace, resolved from the model page HTML at startup and
-// falling back to the static default when the page is unreachable.
-let namespace = NAMESPACE;
-
-export function setNamespace(ns: string): void {
-  namespace = ns;
+interface PageData {
+  namespace: string;
+  functionId: string;
+  inputModalities: string[];
+  outputModalities: string[];
 }
 
-const queueUrl = (slug: string) =>
-  `${UPSTREAM_BASE}/queues/models/${namespace}/${slug}`;
+// The page embeds the deployment blob as a JSON string (quotes backslash-escaped)
+// inside a larger JSON; all four fields use the same escape shape as the prior
+// namespace regex.
+const NS_RE = /\\"namespace\\":\\"([^"\\]+)\\"/;
+const NVCF_RE = /\\"nvcfFunctionId\\":\\"([^"\\]+)\\"/;
+const INPUT_RE = /\\"inputModalities\\":\[(.*?)\]/;
+const OUTPUT_RE = /\\"outputModalities\\":\[(.*?)\]/;
+const TOKEN_RE = /\\"([A-Za-z]+)\\"/g;
 
-const QUEUE_HEADERS = {
-  "user-agent": USER_AGENT,
-  origin: ORIGIN,
-  referer: REFERER,
-};
+const PAGE_HEADERS = { "user-agent": USER_AGENT };
 
-/**
- * Models that are not usable through chat completions: embeddings, rerankers,
- * document parsers, speech, image/video generation, score/reward or
- * guard/safety classifiers, or scientific models. Everything else outputs
- * text and is chat-capable (multimodal vision-language models are kept).
- */
-export function isTextCapable(id: string): boolean {
-  const name = id.toLowerCase();
-  if (
-    /(^|\/)(bge|metadata|milvus|nvclip|cosmos-transfer|cosmos3|flux|sdxl|controlnet|img2img|kandinsky|stable-diffusion|whisper|parakeet|conformer|canary|riva|speaker|lipsync|eyecontact|asr|tts|text-to-speech|speech|voicegen|molt|fidelity|fluent|fourcastnet|cuopt|alphafold|esm[0-9]?|esmfold|diffdock|boltz|openfold|evo2|genmol|diffusion-test|molecular)/.test(
-      name,
-    )
-  )
-    return false;
-  // Embedding/retrieval/score/guard outputs are not chat text. Word-boundary
-  // anchored so embedded keywords in text-model names do not match.
-  if (
-    /\b(embed|retriev|rerank|parse|ocr|reward|guard|content-safety|topic-control|safety|nis-email|dns|evil|calc|mitre|vuln|divergentca|cve)\b/.test(
-      name,
-    )
-  )
-    return false;
-  return true;
+function pageUrl(id: string, slug: string): string {
+  const org = id.split("/")[0] ?? id;
+  return `${PAGE_ORIGIN}/${org}/${slug}`;
+}
+
+function parseEscapedArray(slice: string | undefined): string[] {
+  if (!slice) return [];
+  return Array.from(slice.matchAll(TOKEN_RE), (m) => m[1] ?? "").filter(
+    Boolean,
+  );
+}
+
+function parsePage(html: string): PageData | null {
+  const namespace = html.match(NS_RE)?.[1];
+  const functionId = html.match(NVCF_RE)?.[1];
+  // NVIDIA serializes an undeployed model as `nvcfFunctionId: "None"` -> not servable.
+  if (!namespace || !functionId || functionId === "None") return null;
+  return {
+    namespace,
+    functionId,
+    inputModalities: parseEscapedArray(html.match(INPUT_RE)?.[1]),
+    outputModalities: parseEscapedArray(html.match(OUTPUT_RE)?.[1]),
+  };
 }
 
 /** Predict-path candidates for an OpenAI id: the bare name, then dots→underscores. */
 export function slugCandidates(id: string): string[] {
   const name = id.split("/", 2)[1] ?? id;
-  return [name, name.replaceAll(".", "_")];
+  const underscored = name.replaceAll(".", "_");
+  return name === underscored ? [name] : [name, underscored];
 }
 
-async function probeFunctionId(
+async function fetchModelPage(
+  id: string,
   slug: string,
   fetchImpl: CatalogFetch,
-): Promise<string | null> {
+): Promise<PageData | null> {
   try {
-    const r = await fetchImpl(queueUrl(slug), {
-      headers: QUEUE_HEADERS,
-      signal: AbortSignal.timeout(15_000),
+    // redirect: "error" skips stale integrate ids whose page 308-renames to a
+    // different model (e.g. nvidia/cosmos-reason2-8b → cosmos3-nano-reasoner);
+    // following would mis-attribute the renamed model's route back to the old id.
+    const r = await fetchImpl(pageUrl(id, slug), {
+      headers: PAGE_HEADERS,
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) return null;
-    const body = (await r.json()) as { functionId?: string };
-    if (typeof body.functionId !== "string") return null;
-    return body.functionId;
+    return parsePage(await r.text());
   } catch {
     return null;
   }
+}
+
+/** Include iff the page reports Text among input AND output modalities. */
+function isTextInTextOut(page: PageData): boolean {
+  return (
+    page.inputModalities.includes("Text") &&
+    page.outputModalities.includes("Text")
+  );
+}
+
+/**
+ * Resolve a single model's deploy route from its build.nvidia.com page:
+ * `modelId` = `{namespace}/{winning slug}`, function id = page `nvcfFunctionId`.
+ * Returns null when no candidate slug is a real model page.
+ */
+export async function resolveModelRoute(
+  id: string,
+  fetchImpl: CatalogFetch = fetch,
+): Promise<ModelRoute | null> {
+  for (const slug of slugCandidates(id)) {
+    const page = await fetchModelPage(id, slug, fetchImpl);
+    if (page)
+      return {
+        modelId: `${page.namespace}/${slug}`,
+        functionId: page.functionId,
+      };
+  }
+  return null;
+}
+
+// Fallback catalog refresh interval when the response has no Cache-Control.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+export interface CatalogResult {
+  entries: CatalogEntry[];
+  refreshMs: number;
+}
+
+function parseMaxAge(cc: string | null): number | null {
+  if (!cc) return null;
+  const m = cc.match(/max-age=(\d+)/i);
+  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
 }
 
 async function mapPool<T, R>(
@@ -110,61 +159,11 @@ async function mapPool<T, R>(
 }
 
 /**
- * Resolve a single model's deploy route (predict path + queue function id) by
- * probing the queue endpoint. Used as the fallback when the full catalog
- * cannot be fetched: any reachable default model still routes correctly
- * without hardcoded deployment values.
- */
-export async function resolveModelRoute(
-  id: string,
-  fetchImpl: CatalogFetch = fetch,
-): Promise<ModelRoute | null> {
-  for (const slug of slugCandidates(id)) {
-    const functionId = await probeFunctionId(slug, fetchImpl);
-    if (functionId) return { modelId: `${namespace}/${slug}`, functionId };
-  }
-  return null;
-}
-
-/**
- * Extract the deploy namespace from the model page HTML. The page embeds it as
- * a JSON field in the initial data blob. Returns null when the page is
- * unreachable or the field is absent.
- */
-export async function resolveNamespace(
-  fetchImpl: CatalogFetch = fetch,
-): Promise<string | null> {
-  try {
-    const r = await fetchImpl(`https://build.nvidia.com/${env.model}`, {
-      headers: { "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!r.ok) return null;
-    const html = await r.text();
-    return html.match(/\\"namespace\\":\\"([a-z0-9]+)\\"/)?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-// Fallback catalog refresh interval when the response has no Cache-Control.
-const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
-
-export interface CatalogResult {
-  entries: CatalogEntry[];
-  refreshMs: number;
-}
-
-function parseMaxAge(cc: string | null): number | null {
-  if (!cc) return null;
-  const m = cc.match(/max-age=(\d+)/i);
-  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
-}
-
-/**
- * Fetch the servable catalog. Throws if the integrate list itself is
- * unreachable; individual queue probes that fail are skipped silently.
- * Returns entries plus a refresh interval derived from the response Cache-Control.
+ * Fetch the servable catalog. Throws if the integrate model list itself is
+ * unreachable. Per model, the build.nvidia.com page is read for the function
+ * id, namespace and modalities; only Text-in/Text-out models with a real model
+ * page are kept — older-template pages that lack the modalities field, stale
+ * renamed ids, and ids without a page are dropped.
  */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
@@ -188,22 +187,24 @@ export async function buildCatalog(opts?: {
     opts?.concurrency ?? 4,
     async (m) => {
       for (const slug of slugCandidates(m.id)) {
-        const functionId = await probeFunctionId(slug, fetchImpl);
-        if (functionId)
-          return {
-            id: m.id,
-            slug,
-            functionId,
-            created: typeof m.created === "number" ? m.created : 0,
-            ownedBy: m.owned_by,
-          };
+        const page = await fetchModelPage(m.id, slug, fetchImpl);
+        if (!page) continue;
+        if (!isTextInTextOut(page)) return null;
+        return {
+          id: m.id,
+          slug,
+          namespace: page.namespace,
+          functionId: page.functionId,
+          created: typeof m.created === "number" ? m.created : 0,
+          ownedBy: m.owned_by,
+        } as CatalogEntry;
       }
       return null;
     },
   );
 
   const sorted = entries
-    .filter((e): e is CatalogEntry => e !== null && isTextCapable(e.id))
+    .filter((e): e is CatalogEntry => e !== null)
     .sort((a, b) => a.id.localeCompare(b.id));
   return { entries: sorted, refreshMs };
 }

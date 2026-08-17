@@ -10,6 +10,8 @@ export interface CatalogEntry {
   id: string;
   /** Predict path segment, e.g. `glm-5.2` or `llama-3_1-8b-instruct`. */
   slug: string;
+  /** Predict-path namespace read from the model page; falls back to `NAMESPACE`. */
+  namespace?: string;
   /** Per-model value for the `nv-function-id` header. */
   functionId: string;
   created: number;

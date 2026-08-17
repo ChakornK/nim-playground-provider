@@ -208,7 +208,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
     const route = entry
       ? {
-          modelId: `${NAMESPACE}/${entry.slug}`,
+          modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
         }
       : deps.defaultRoute;
