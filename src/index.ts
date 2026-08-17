@@ -41,6 +41,7 @@ const refreshCatalog = async () => {
   console.log("nim-playground-provider: fetching catalog...");
   try {
     const result = await buildCatalog({
+      lightpandaPath,
       concurrency: 8,
       onProgress: (done, total) => {
         if (done === 0) {

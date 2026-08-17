@@ -55,7 +55,7 @@ Returns streaming or non-streaming completions in OpenAI format. `model` is rout
 
 ### `GET /v1/models`
 
-Returns the model list. The proxy takes candidate ids from NVIDIA's public model list, then fetches each model's `build.nvidia.com` page for its deploy namespace, per-model function ID, and input/output modalities. The proxy serves a model only when its page lists Text as both an input and an output modality. LLMs and vision-language models qualify; embeddings, speech, image/video generation, and other non-text models do not. Models with no `build.nvidia.com` page are dropped. If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
+Returns the model list. The proxy prefers the build.nvidia.com gallery (whose model cards mark `Free Endpoint` + `chat` models) as the candidate source, fetching each model's `build.nvidia.com` page for its deploy namespace, per-model function ID, and input/output modalities; when the gallery is unreachable it falls back to NVIDIA's public model list. The proxy serves a model only when its page lists Text as both an input and an output modality, and drops entries past their `DEPRECATION` date. LLMs and vision-language models qualify; embeddings, speech, image/video generation, and other non-text models do not. Models with no `build.nvidia.com` page are dropped. If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
 
 ## How it works
 

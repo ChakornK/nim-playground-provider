@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   buildCatalog,
   INTEGRATE_MODELS_URL,
+  parseGalleryCandidates,
   resolveModelRoute,
   slugCandidates,
 } from "../src/catalog.ts";
@@ -223,4 +224,83 @@ test("resolveModelRoute returns null when no candidate is a real model page", as
   expect(
     await resolveModelRoute("google/gemma-3-12b-it", fetchImpl),
   ).toBeNull();
+});
+
+// --- Gallery SSR pre-filter ---------------------------------------------------
+
+// Mirrors the backslash-escaped JSON shape the gallery RSC payload embeds.
+function galleryBlob(o: {
+  rid: string;
+  chat?: boolean; // default true
+  free?: boolean; // default true
+  publisher?: string; // omit to drop (no publisher label)
+  deprecation?: string; // MM/DD/YYYY
+  dateCreated?: string; // ISO
+}): string {
+  const lbl = (k: string, vs: string[]) =>
+    `{\\"key\\":\\"${k}\\",\\"values\\":[${vs.map((v) => `\\"${v}\\"`).join(",")}]}`;
+  const att = (k: string, v: string) =>
+    `{\\"key\\":\\"${k}\\",\\"value\\":\\"${v}\\"}`;
+  const labels = [
+    lbl("playgroundType", [o.chat === false ? "embedding" : "chat"]),
+    lbl("nimType", [o.free === false ? "Partner Endpoint" : "Free Endpoint"]),
+    ...(o.publisher ? [lbl("publisher", [o.publisher])] : []),
+  ];
+  const attrs = o.deprecation ? [att("DEPRECATION", o.deprecation)] : [];
+  const parts = [
+    `\\"resourceType\\":\\"ENDPOINT\\"`,
+    `\\"resourceId\\":\\"${o.rid}\\"`,
+    `\\"labels\\":[${labels.join(",")}]`,
+    ...(attrs.length ? [`\\"attributes\\":[${attrs.join(",")}]`] : []),
+    ...(o.dateCreated ? [`\\"dateCreated\\":\\"${o.dateCreated}\\"`] : []),
+  ];
+  return `{${parts.join(",")}}`;
+}
+
+test("parseGalleryCandidates keeps free+chat non-deprecated models and drops the rest", () => {
+  const html = `<html><script>self.__next_f.push([1,"${[
+    galleryBlob({
+      rid: "qc69jvmznzxy/glm-5.2",
+      publisher: "z-ai",
+      deprecation: "12/31/2099",
+      dateCreated: "2026-07-03T20:32:17.807Z",
+    }),
+    galleryBlob({
+      rid: "qc69jvmznzxy/minimax-m3",
+      publisher: "minimaxai",
+      dateCreated: "2026-06-12T14:01:30.878Z",
+    }),
+    galleryBlob({
+      rid: "qc69jvmznzxy/old-thing",
+      publisher: "nvidia",
+      deprecation: "01/01/2000",
+      dateCreated: "2020-01-01T00:00:00Z",
+    }),
+    galleryBlob({
+      rid: "qc69jvmznzxy/not-chat",
+      chat: false,
+      publisher: "nvidia",
+    }),
+    galleryBlob({
+      rid: "qc69jvmznzxy/not-free",
+      free: false,
+      publisher: "nvidia",
+    }),
+    galleryBlob({ rid: "qc69jvmznzxy/no-pub" }),
+    galleryBlob({
+      rid: "qc69jvmznzxy/glm-5.2",
+      publisher: "z-ai",
+      dateCreated: "2026-07-03T20:32:17.807Z",
+    }),
+  ].join("")}"])</script></html>`;
+  const cands = parseGalleryCandidates(html);
+  expect(cands.map((c) => c.id).sort()).toEqual([
+    "minimaxai/minimax-m3",
+    "z-ai/glm-5.2",
+  ]);
+  const glm = cands.find((c) => c.id === "z-ai/glm-5.2");
+  expect(glm?.ownedBy).toBe("z-ai");
+  expect(glm?.created).toBe(
+    Math.floor(Date.parse("2026-07-03T20:32:17.807Z") / 1000),
+  );
 });
