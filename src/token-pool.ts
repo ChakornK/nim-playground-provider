@@ -19,6 +19,8 @@ export interface TokenPoolOpts {
   maxWaiters?: number;
   /** Extra mint attempts after the first failure within one refill. */
   maxRetries?: number;
+  /** Fires once when the warm pool first reaches `capacity`. */
+  onWarm?: (warm: number, capacity: number) => void;
 }
 
 export class TokenPool {
@@ -26,6 +28,7 @@ export class TokenPool {
   private refilling = false;
   private waiting: Waiter[] = [];
   private rearming = false;
+  private warmNotified = false;
 
   private source: TokenSource;
   private capacity: number;
@@ -95,6 +98,10 @@ export class TokenPool {
         waiter.resolve(token);
       } else {
         this.tokens.push(token);
+        if (!this.warmNotified && this.tokens.length >= this.capacity) {
+          this.warmNotified = true;
+          this.opts.onWarm?.(this.tokens.length, this.capacity);
+        }
       }
       deficit = this.capacity - this.tokens.length + this.waiting.length;
     }

@@ -1,5 +1,9 @@
 import { BrowserSession } from "./browser.ts";
-import { buildCatalog, resolveModelRoute } from "./catalog.ts";
+import {
+  buildCatalog,
+  resolveModelRoute,
+  type CatalogEvent,
+} from "./catalog.ts";
 import { detectLightpanda, env } from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
@@ -8,12 +12,15 @@ import { Upstream } from "./upstream.ts";
 
 const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });
-const pool = new TokenPool(session, env.poolSize);
+const pool = new TokenPool(session, env.poolSize, {
+  onWarm: (warm) =>
+    console.log(`nim-playground-provider: token pool ready (${warm} warm)`),
+});
 const upstream = new Upstream();
 
-// Resolve the default route first so the proxy serves immediately even if the
-// full catalog takes time to build or NVIDIA's list is unreachable. The route
-// (namespace + function id) is read from the model page.
+// Resolve the default route (namespace + function id, read from the model page)
+// first so chat works even when the catalog build fails or NVIDIA's list is
+// unreachable.
 console.log(
   `nim-playground-provider: fetching default route for ${env.model}...`,
 );
@@ -29,31 +36,68 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is built eagerly at startup; /v1/models falls back to the default
-// model until the build finishes (and re-triggers if it failed).
+// Catalog is awaited at startup (server listens once ready). A failed build
+// re-triggers on the next /v1/models request; thereafter it refreshes on an
+// interval.
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
 let catalogRefreshMs = DEFAULT_REFRESH_MS;
+
+const logCatalogEvent = (e: CatalogEvent) => {
+  switch (e.type) {
+    case "gallery-start":
+      console.log(
+        "nim-playground-provider: discovering free chat models via build.nvidia.com gallery...",
+      );
+      return;
+    case "gallery-done":
+      console.log(
+        `nim-playground-provider: discovered ${e.count} free chat models from gallery`,
+      );
+      return;
+    case "fallback":
+      console.log(
+        `nim-playground-provider: gallery unavailable (${e.reason}); falling back to integrate list`,
+      );
+      return;
+    case "integrate-done":
+      console.log(
+        `nim-playground-provider: discovered ${e.count} models from integrate list`,
+      );
+      return;
+    case "fetch-start":
+      console.log(
+        `nim-playground-provider: fetching ${e.count} model pages (concurrency=${e.concurrency})...`,
+      );
+      return;
+    case "model":
+      if (e.outcome === "kept") {
+        console.log(
+          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id})`,
+        );
+      } else {
+        console.log(
+          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
+        );
+      }
+      return;
+    case "fetch-end":
+      console.log(
+        `nim-playground-provider: fetched ${e.total}/${e.total} models (${e.kept} kept, ${e.dropped} dropped)`,
+      );
+      return;
+  }
+};
+
 const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
-  console.log("nim-playground-provider: fetching catalog...");
   try {
     const result = await buildCatalog({
       lightpandaPath,
       concurrency: 8,
-      onProgress: (done, total) => {
-        if (done === 0) {
-          console.log(
-            `nim-playground-provider: catalog: ${total} models to fetch`,
-          );
-        } else if (done % 25 === 0) {
-          console.log(
-            `nim-playground-provider: catalog progress ${done}/${total}`,
-          );
-        }
-      },
+      onEvent: logCatalogEvent,
     });
     catalog = result.entries;
     catalogRefreshMs = result.refreshMs;
@@ -74,8 +118,11 @@ const getCatalog = () => {
   return catalog;
 };
 
-void refreshCatalog();
+await refreshCatalog();
 
+console.log(
+  `nim-playground-provider: warming token pool (size=${env.poolSize})`,
+);
 pool.prewarm();
 
 const server = await createServer({
@@ -87,7 +134,7 @@ const server = await createServer({
 });
 
 console.log(
-  `nim-playground-provider listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
+  `nim-playground-provider: listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
 );
 
 const stop = async () => {
