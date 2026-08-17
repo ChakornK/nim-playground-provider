@@ -18,9 +18,7 @@ const pool = new TokenPool(session, env.poolSize, {
 });
 const upstream = new Upstream();
 
-// Resolve the default route (namespace + function id, read from the model page)
-// first so chat works even when the catalog build fails or NVIDIA's list is
-// unreachable.
+// Resolve the default route first so chat works even if the catalog build fails.
 console.log(
   `nim-playground-provider: fetching default route for ${env.model}...`,
 );
@@ -36,9 +34,8 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is awaited at startup (server listens once ready). A failed build
-// re-triggers on the next /v1/models request; thereafter it refreshes on an
-// interval.
+// Catalog is awaited at startup; a failed build re-triggers on /v1/models, then
+// refreshes on an interval.
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";

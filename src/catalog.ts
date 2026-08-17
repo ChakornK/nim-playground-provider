@@ -1,9 +1,5 @@
-// NIM models this proxy can serve. Candidates come from the build.nvidia.com
-// gallery SSR (free chat models, via lightpanda), falling back to the
-// integrate.api.nvidia.com list. Per candidate the deploy namespace, function id
-// and modalities are read from the model page. Served iff the page reports Text
-// in both input and output modalities. The page's `nvcfFunctionId` is the
-// `nv-function-id` header value, so no queue probe is needed.
+// NIM catalog this proxy serves. Gallery SSR candidates (free chat, lightpanda)
+// backed by the integrate list; each model's page supplies the route.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
@@ -34,9 +30,7 @@ interface PageData {
   outputModalities: string[];
 }
 
-// The page embeds the deployment blob as a JSON string (quotes backslash-escaped)
-// inside a larger JSON; all four fields use the same escape shape as the prior
-// namespace regex.
+// Page embeds a JSON deployment blob (backslash-escaped) inside a larger JSON.
 const NS_RE = /\\"namespace\\":\\"([^"\\]+)\\"/;
 const NVCF_RE = /\\"nvcfFunctionId\\":\\"([^"\\]+)\\"/;
 const INPUT_RE = /\\"inputModalities\\":\[(.*?)\]/;
@@ -83,9 +77,8 @@ async function fetchModelPage(
   fetchImpl: CatalogFetch,
 ): Promise<PageData | null> {
   try {
-    // redirect: "error" skips stale integrate ids whose page 308-renames to a
-    // different model (e.g. nvidia/cosmos-reason2-8b → cosmos3-nano-reasoner);
-    // following would mis-attribute the renamed model's route back to the old id.
+    // redirect:"error" skips stale ids whose page 308-renames; following would
+    // mis-attribute the renamed route back to the old id.
     const r = await fetchImpl(pageUrl(id, slug), {
       headers: PAGE_HEADERS,
       redirect: "error",
@@ -177,13 +170,9 @@ async function mapPool<T, R>(
   return out;
 }
 
-// --- Gallery SSR pre-filter (lightpanda) --------------------------------------
-// /models?pageSize=1024 sits behind a WAF/Akamai challenge plain fetch can't
-// solve (202/0 bytes). lightpanda's JS solves it, so we drive it over CDP for
-// the rendered DOM, which embeds each model card as a backslash-escaped JSON
-// blob in the Next.js RSC payload (`self.__next_f.push`). Each blob's labels
-// (`playgroundType:"chat"`, `nimType:"Free Endpoint"`) let us pick the ~32 free
-// chat models up front instead of fetching all 102 per-model pages.
+// /models?pageSize=1024 sits behind a WAF plain fetch can't solve; lightpanda
+// solves it over CDP. The rendered DOM embeds each model card as escaped JSON
+// (RSC payload) with labels (chat, Free Endpoint), pre-filtering to ~32 vs 102.
 
 export interface GalleryCandidate {
   /** Public model id `{publisher}/{slug}` (same shape as integrate ids). */
@@ -210,10 +199,9 @@ function galleryLabelValue(blob: string, key: string): string {
 }
 
 /**
- * Parse the gallery DOM into free+chat, non-deprecated candidates. Drops a model
- * only when its `DEPRECATION` date has passed (a future date keeps it servable
- * today, e.g. glm-5.2). `available` is not gated. The per-model page fetch
- * drops uncallable models, and the gallery flag lags reality (drops minimax-m3).
+ * Parse the gallery DOM into free+chat, non-deprecated candidates. Only a
+ * passed DEPRECATION date drops a model; `available` is not gated, since the
+ * per-model page fetch already drops uncallable models.
  */
 export function parseGalleryCandidates(html: string): GalleryCandidate[] {
   const today = new Date();
@@ -251,9 +239,8 @@ export function parseGalleryCandidates(html: string): GalleryCandidate[] {
   return [...seen.values()];
 }
 
-// lightpanda is the only client that solves the WAF guarding the
-// gallery SSR; if Akamai changes the challenge or lightpanda is missing,
-// buildCatalog falls back to integrate (the no-WAF per-model-page path).
+// lightpanda is the only client that solves the gallery WAF; if Akamai
+// changes the challenge or lightpanda is missing, fall back to integrate.
 async function fetchGalleryHtml(
   lightpandaPath: string,
 ): Promise<string | null> {
@@ -300,9 +287,8 @@ async function fetchGalleryHtml(
         timeout: 30_000,
       })
       .catch(() => {});
-    // The 202 challenge page resolves domcontentloaded first; the real 200 page
-    // (model cards in the RSC payload) renders once lightpanda solves the WAF.
-    // Poll page.content() until the ENDPOINT marker appears.
+    // The 202 challenge fires domcontentloaded first; the real 200 page (ENDPOINT
+    // marker in the RSC payload) renders once lightpanda solves the WAF, so poll.
     const marker = '\\"resourceType\\":\\"ENDPOINT\\"';
     for (let i = 0; i < 30; i++) {
       const html = await page.content();
@@ -321,19 +307,17 @@ async function fetchGalleryHtml(
 }
 
 /**
- * Build the servable catalog. Candidates come from the build.nvidia.com gallery
- * SSR (via lightpanda, which solves the WAF), pre-filtered to non-deprecated
- * free chat models; per candidate the model page supplies the function id,
- * namespace and modalities. Only Text-in/Text-out models with a real page are
- * kept. Falls back to the integrate model list (fetches all per-model pages)
- * when lightpanda is missing or the gallery yields nothing; integrate's
- * max-age then drives the refresh interval.
+ * Build the servable catalog. Gallery candidates (free chat, lightpanda) need
+ * only a real page (chat label vouches for text in/out); integrate fallback
+ * candidates must also report Text modalities, and set the refresh interval.
  */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
   onEvent?: (e: CatalogEvent) => void;
   lightpandaPath?: string;
+  /** Pre-fetched gallery candidates; skips the lightpanda gallery fetch when set. */
+  galleryCandidates?: GalleryCandidate[];
 }): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const onEvent = opts?.onEvent;
@@ -341,8 +325,17 @@ export async function buildCatalog(opts?: {
   type Cand = { id: string; created: number; owned_by: string };
   let candidates: Cand[] | null = null;
   let refreshMs = DEFAULT_REFRESH_MS;
+  let chatPreFiltered = false;
 
-  if (opts?.lightpandaPath) {
+  if (opts?.galleryCandidates && opts.galleryCandidates.length > 0) {
+    candidates = opts.galleryCandidates.map((m) => ({
+      id: m.id,
+      created: m.created,
+      owned_by: m.ownedBy,
+    }));
+    chatPreFiltered = true;
+    onEvent?.({ type: "gallery-done", count: candidates.length });
+  } else if (opts?.lightpandaPath) {
     onEvent?.({ type: "gallery-start" });
     try {
       const html = await fetchGalleryHtml(opts.lightpandaPath);
@@ -354,6 +347,7 @@ export async function buildCatalog(opts?: {
             created: m.created,
             owned_by: m.ownedBy,
           }));
+          chatPreFiltered = true;
           onEvent?.({ type: "gallery-done", count: candidates.length });
         }
       }
@@ -401,7 +395,7 @@ export async function buildCatalog(opts?: {
       for (const slug of slugCandidates(m.id)) {
         const page = await fetchModelPage(m.id, slug, fetchImpl);
         if (!page) continue;
-        if (!isTextInTextOut(page)) {
+        if (!chatPreFiltered && !isTextInTextOut(page)) {
           emit("dropped", "not text in/out");
           return null;
         }

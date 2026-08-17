@@ -115,8 +115,7 @@ test("buildCatalog keeps page Text-in/Text-out models and drops the rest", async
         { status: 200 },
       );
     if (u === "https://build.nvidia.com/adept/fuyu-8b")
-      // page exists with Text/Image in, Text out, but nvfFunctionId sentinel
-      // "None" -> undeployed, excluded
+      // Text/Image in, Text out, but "None" sentinel -> undeployed, excluded
       return new Response(
         pageHTML({
           functionId: "None",
@@ -165,9 +164,9 @@ test("buildCatalog keeps page Text-in/Text-out models and drops the rest", async
     },
   ]);
   expect(result.refreshMs).toBe(6 * 60 * 60 * 1000);
-  // gemma-3-12b-it: dotless, no build.nvidia.com page -> strict page-only drops it
+  // dotless, no real page -> strict page-only drops it
   expect(seen).toContain("https://build.nvidia.com/google/gemma-3-12b-it");
-  // fuyu-8b page reports nvcfFunctionId "None" (undeployed sentinel) -> dropped
+  // nvcfFunctionId "None" (undeployed sentinel) -> dropped
   expect(result.entries.find((e) => e.id === "adept/fuyu-8b")).toBeUndefined();
 });
 
@@ -176,6 +175,36 @@ test("buildCatalog propagates integrate-list failure", async () => {
   await expect(buildCatalog({ fetchImpl })).rejects.toThrow(
     /integrate model list 502/,
   );
+});
+
+test("buildCatalog trusts the gallery chat label and skips the per-page modality check", async () => {
+  // A chat-labeled page that omits the modality arrays is kept via the gallery label.
+  const fetchImpl = async (url: string | URL) => {
+    if (String(url) === "https://build.nvidia.com/thinkingmachines/inkling")
+      return new Response(pageHTML({ functionId: "ink-fn" }), { status: 200 });
+    return new Response(LANDING_HTML, { status: 200 });
+  };
+  const result = await buildCatalog({
+    fetchImpl,
+    galleryCandidates: [
+      {
+        id: "thinkingmachines/inkling",
+        created: 0,
+        ownedBy: "thinkingmachines",
+      },
+    ],
+  });
+  expect(result.entries).toEqual([
+    {
+      id: "thinkingmachines/inkling",
+      slug: "inkling",
+      namespace: "qc69jvmznzxy",
+      functionId: "ink-fn",
+      created: 0,
+      ownedBy: "thinkingmachines",
+    },
+  ]);
+  expect(result.refreshMs).toBe(6 * 60 * 60 * 1000);
 });
 
 test("resolveModelRoute reads namespace + functionId from the model page", async () => {
