@@ -168,6 +168,7 @@ async function mapPool<T, R>(
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
+  onProgress?: (fetched: number, total: number) => void;
 }): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const r = await fetchImpl(INTEGRATE_MODELS_URL, {
@@ -182,24 +183,32 @@ export async function buildCatalog(opts?: {
   if (!Array.isArray(list.data))
     throw new Error("integrate model list malformed");
 
+  const onProgress = opts?.onProgress;
+  onProgress?.(0, list.data.length);
+
+  let done = 0;
   const entries = await mapPool(
     list.data,
     opts?.concurrency ?? 4,
     async (m) => {
-      for (const slug of slugCandidates(m.id)) {
-        const page = await fetchModelPage(m.id, slug, fetchImpl);
-        if (!page) continue;
-        if (!isTextInTextOut(page)) return null;
-        return {
-          id: m.id,
-          slug,
-          namespace: page.namespace,
-          functionId: page.functionId,
-          created: typeof m.created === "number" ? m.created : 0,
-          ownedBy: m.owned_by,
-        } as CatalogEntry;
+      try {
+        for (const slug of slugCandidates(m.id)) {
+          const page = await fetchModelPage(m.id, slug, fetchImpl);
+          if (!page) continue;
+          if (!isTextInTextOut(page)) return null;
+          return {
+            id: m.id,
+            slug,
+            namespace: page.namespace,
+            functionId: page.functionId,
+            created: typeof m.created === "number" ? m.created : 0,
+            ownedBy: m.owned_by,
+          } as CatalogEntry;
+        }
+        return null;
+      } finally {
+        onProgress?.(++done, list.data.length);
       }
-      return null;
     },
   );
 

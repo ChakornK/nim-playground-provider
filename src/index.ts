@@ -14,6 +14,9 @@ const upstream = new Upstream();
 // Resolve the default route first so the proxy serves immediately even if the
 // full catalog takes time to build or NVIDIA's list is unreachable. The route
 // (namespace + function id) is read from the model page.
+console.log(
+  `nim-playground-provider: fetching default route for ${env.model}...`,
+);
 const defaultRoute: ModelRoute | undefined =
   (await resolveModelRoute(env.model)) ?? undefined;
 if (defaultRoute) {
@@ -35,8 +38,22 @@ let catalogRefreshMs = DEFAULT_REFRESH_MS;
 const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
+  console.log("nim-playground-provider: fetching catalog...");
   try {
-    const result = await buildCatalog({ concurrency: 8 });
+    const result = await buildCatalog({
+      concurrency: 8,
+      onProgress: (done, total) => {
+        if (done === 0) {
+          console.log(
+            `nim-playground-provider: catalog: ${total} models to fetch`,
+          );
+        } else if (done % 25 === 0) {
+          console.log(
+            `nim-playground-provider: catalog progress ${done}/${total}`,
+          );
+        }
+      },
+    });
     catalog = result.entries;
     catalogRefreshMs = result.refreshMs;
     catalogState = "ready";
