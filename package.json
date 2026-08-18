@@ -18,13 +18,13 @@
     "playwright-core": "^1.62.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
+    "@biomejs/biome": "2.5.9",
     "@ianvs/prettier-plugin-sort-imports": "^4.7.1",
-    "@types/node": "^26.0.0",
+    "@types/node": "^26.2.0",
     "prettier": "^3.9.6",
-    "vitest": "^2.1.0"
+    "vitest": "4.1.10"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^7.0.2"
   }
 }
