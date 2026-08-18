@@ -36,7 +36,7 @@ All settings use environment variables. None are required.
 
 ## Authentication
 
-By default the proxy requires no key. Set `API_KEY` to one or more secret keys, separated by commas, and every request must carry one in its `Authorization` header. Leave `API_KEY` unset to disable authentication. 
+By default the proxy requires no key. Set `API_KEY` to one or more secret keys, separated by commas, and every request must carry one in its `Authorization` header. Leave `API_KEY` unset to disable authentication.
 
 ```bash
 API_KEY=secret1,secret2 npm start
@@ -55,7 +55,7 @@ Returns streaming or non-streaming completions in OpenAI format. `model` is rout
 
 ### `GET /v1/models`
 
-Returns the model list. On startup the proxy builds a catalog from NVIDIA's public model list plus each model's queue function ID, and serves every text-capable model (LLMs and multimodal vision-language models; embeddings, speech, image/video generation and other non-text models are excluded). If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
+Returns the model list. The proxy prefers the build.nvidia.com gallery (whose model cards mark `Free Endpoint` + `chat` models) as the candidate source, fetching each model's `build.nvidia.com` page for its deploy namespace, per-model function ID, and input/output modalities; when the gallery is unreachable it falls back to NVIDIA's public model list. The proxy serves a model only when its page lists Text as both an input and an output modality, and drops entries past their `DEPRECATION` date. LLMs and vision-language models qualify; embeddings, speech, image/video generation, and other non-text models do not. Models with no `build.nvidia.com` page are dropped. If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
 
 ## How it works
 

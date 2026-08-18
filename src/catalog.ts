@@ -1,91 +1,152 @@
-// Catalog of NVIDIA NIM models that this proxy can serve. Built at startup
-// from the public OpenAI-compatible model list (`integrate.api.nvidia.com`)
-// plus per-model function IDs from the queue endpoint.
+// NIM catalog this proxy serves. Gallery SSR candidates (free chat, lightpanda)
+// backed by the integrate list; each model's page supplies the route.
 
-import {
-  env,
-  NAMESPACE,
-  ORIGIN,
-  REFERER,
-  UPSTREAM_BASE,
-  USER_AGENT,
-} from "./constants.ts";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
+import { chromium, type Browser } from "playwright-core";
+import { USER_AGENT } from "./constants.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
 export const INTEGRATE_MODELS_URL =
   "https://integrate.api.nvidia.com/v1/models";
+export const GALLERY_URL = "https://build.nvidia.com/models?pageSize=1024";
+const PAGE_ORIGIN = "https://build.nvidia.com";
 
 type CatalogFetch = (
   url: string | URL,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    headers?: Record<string, string>;
+    redirect?: RequestRedirect;
+    signal?: AbortSignal;
+  },
 ) => Promise<Response>;
 
-// Deployment namespace, resolved from the model page HTML at startup and
-// falling back to the static default when the page is unreachable.
-let namespace = NAMESPACE;
-
-export function setNamespace(ns: string): void {
-  namespace = ns;
+interface PageData {
+  namespace: string;
+  functionId: string;
+  inputModalities: string[];
+  outputModalities: string[];
 }
 
-const queueUrl = (slug: string) =>
-  `${UPSTREAM_BASE}/queues/models/${namespace}/${slug}`;
+// Page embeds a JSON deployment blob (backslash-escaped) inside a larger JSON.
+const NS_RE = /\\"namespace\\":\\"([^"\\]+)\\"/;
+const NVCF_RE = /\\"nvcfFunctionId\\":\\"([^"\\]+)\\"/;
+const INPUT_RE = /\\"inputModalities\\":\[(.*?)\]/;
+const OUTPUT_RE = /\\"outputModalities\\":\[(.*?)\]/;
+const TOKEN_RE = /\\"([A-Za-z]+)\\"/g;
 
-const QUEUE_HEADERS = {
-  "user-agent": USER_AGENT,
-  origin: ORIGIN,
-  referer: REFERER,
-};
+const PAGE_HEADERS = { "user-agent": USER_AGENT };
 
-/**
- * Models that are not usable through chat completions: embeddings, rerankers,
- * document parsers, speech, image/video generation, score/reward or
- * guard/safety classifiers, or scientific models. Everything else outputs
- * text and is chat-capable (multimodal vision-language models are kept).
- */
-export function isTextCapable(id: string): boolean {
-  const name = id.toLowerCase();
-  if (
-    /(^|\/)(bge|metadata|milvus|nvclip|cosmos-transfer|cosmos3|flux|sdxl|controlnet|img2img|kandinsky|stable-diffusion|whisper|parakeet|conformer|canary|riva|speaker|lipsync|eyecontact|asr|tts|text-to-speech|speech|voicegen|molt|fidelity|fluent|fourcastnet|cuopt|alphafold|esm[0-9]?|esmfold|diffdock|boltz|openfold|evo2|genmol|diffusion-test|molecular)/.test(
-      name,
-    )
-  )
-    return false;
-  // Embedding/retrieval/score/guard outputs are not chat text. Word-boundary
-  // anchored so embedded keywords in text-model names do not match.
-  if (
-    /\b(embed|retriev|rerank|parse|ocr|reward|guard|content-safety|topic-control|safety|nis-email|dns|evil|calc|mitre|vuln|divergentca|cve)\b/.test(
-      name,
-    )
-  )
-    return false;
-  return true;
+function pageUrl(id: string, slug: string): string {
+  const org = id.split("/")[0] ?? id;
+  return `${PAGE_ORIGIN}/${org}/${slug}`;
+}
+
+function parseEscapedArray(slice: string | undefined): string[] {
+  if (!slice) return [];
+  return Array.from(slice.matchAll(TOKEN_RE), (m) => m[1] ?? "").filter(
+    Boolean,
+  );
+}
+
+function parsePage(html: string): PageData | null {
+  const namespace = html.match(NS_RE)?.[1];
+  const functionId = html.match(NVCF_RE)?.[1];
+  // NVIDIA serializes an undeployed model as `nvcfFunctionId: "None"` -> not servable.
+  if (!namespace || !functionId || functionId === "None") return null;
+  return {
+    namespace,
+    functionId,
+    inputModalities: parseEscapedArray(html.match(INPUT_RE)?.[1]),
+    outputModalities: parseEscapedArray(html.match(OUTPUT_RE)?.[1]),
+  };
 }
 
 /** Predict-path candidates for an OpenAI id: the bare name, then dots→underscores. */
 export function slugCandidates(id: string): string[] {
   const name = id.split("/", 2)[1] ?? id;
-  return [name, name.replaceAll(".", "_")];
+  const underscored = name.replaceAll(".", "_");
+  return name === underscored ? [name] : [name, underscored];
 }
 
-async function probeFunctionId(
+async function fetchModelPage(
+  id: string,
   slug: string,
   fetchImpl: CatalogFetch,
-): Promise<string | null> {
+): Promise<PageData | null> {
   try {
-    const r = await fetchImpl(queueUrl(slug), {
-      headers: QUEUE_HEADERS,
-      signal: AbortSignal.timeout(15_000),
+    // redirect:"error" skips stale ids whose page 308-renames; following would
+    // mis-attribute the renamed route back to the old id.
+    const r = await fetchImpl(pageUrl(id, slug), {
+      headers: PAGE_HEADERS,
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) return null;
-    const body = (await r.json()) as { functionId?: string };
-    if (typeof body.functionId !== "string") return null;
-    return body.functionId;
+    return parsePage(await r.text());
   } catch {
     return null;
   }
+}
+
+/** Include iff the page reports Text among input AND output modalities. */
+function isTextInTextOut(page: PageData): boolean {
+  return (
+    page.inputModalities.includes("Text") &&
+    page.outputModalities.includes("Text")
+  );
+}
+
+/**
+ * Resolve a single model's deploy route from its build.nvidia.com page:
+ * `modelId` = `{namespace}/{winning slug}`, function id = page `nvcfFunctionId`.
+ * Returns null when no candidate slug is a real model page.
+ */
+export async function resolveModelRoute(
+  id: string,
+  fetchImpl: CatalogFetch = fetch,
+): Promise<ModelRoute | null> {
+  for (const slug of slugCandidates(id)) {
+    const page = await fetchModelPage(id, slug, fetchImpl);
+    if (page)
+      return {
+        modelId: `${page.namespace}/${slug}`,
+        functionId: page.functionId,
+      };
+  }
+  return null;
+}
+
+// Fallback catalog refresh interval when the response has no Cache-Control.
+const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+export interface CatalogResult {
+  entries: CatalogEntry[];
+  refreshMs: number;
+}
+
+export type CatalogEvent =
+  | { type: "gallery-start" }
+  | { type: "gallery-done"; count: number }
+  | { type: "fallback"; reason: string }
+  | { type: "integrate-done"; count: number }
+  | { type: "fetch-start"; count: number; concurrency: number }
+  | {
+      type: "model";
+      fetched: number;
+      total: number;
+      id: string;
+      outcome: "kept" | "dropped";
+      reason?: string;
+    }
+  | { type: "fetch-end"; total: number; kept: number; dropped: number };
+
+function parseMaxAge(cc: string | null): number | null {
+  if (!cc) return null;
+  const m = cc.match(/max-age=(\d+)/i);
+  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
 }
 
 async function mapPool<T, R>(
@@ -109,101 +170,255 @@ async function mapPool<T, R>(
   return out;
 }
 
-/**
- * Resolve a single model's deploy route (predict path + queue function id) by
- * probing the queue endpoint. Used as the fallback when the full catalog
- * cannot be fetched: any reachable default model still routes correctly
- * without hardcoded deployment values.
- */
-export async function resolveModelRoute(
-  id: string,
-  fetchImpl: CatalogFetch = fetch,
-): Promise<ModelRoute | null> {
-  for (const slug of slugCandidates(id)) {
-    const functionId = await probeFunctionId(slug, fetchImpl);
-    if (functionId) return { modelId: `${namespace}/${slug}`, functionId };
-  }
-  return null;
+// /models?pageSize=1024 sits behind a WAF plain fetch can't solve; lightpanda
+// solves it over CDP. The rendered DOM embeds each model card as escaped JSON
+// (RSC payload) with labels (chat, Free Endpoint), pre-filtering to ~32 vs 102.
+
+export interface GalleryCandidate {
+  /** Public model id `{publisher}/{slug}` (same shape as integrate ids). */
+  id: string;
+  /** Epoch seconds, from the gallery `dateCreated` ISO field. */
+  created: number;
+  /** The gallery `publisher` label (= public org prefix of the id). */
+  ownedBy: string;
+}
+
+// Needles match the escaped JSON shape `\"k\":\"v\"` inside the RSC string.
+const FREE_NEEDLE = '\\"Free Endpoint\\"';
+const CHAT_NEEDLE = '\\"playgroundType\\",\\"values\\":[\\"chat\\"';
+const DEPREC_RE =
+  /\\"key\\":\\"DEPRECATION\\",\\"value\\":\\"(\d{2})\/(\d{2})\/(\d{4})\\"/;
+
+function galleryLabelValue(blob: string, key: string): string {
+  const needle = `\\"key\\":\\"${key}\\",\\"values\\":[\\"`;
+  const i = blob.indexOf(needle);
+  if (i < 0) return "";
+  const start = i + needle.length;
+  const end = blob.indexOf("\\", start); // closing `\"`
+  return end > 0 ? blob.slice(start, end) : "";
 }
 
 /**
- * Extract the deploy namespace from the model page HTML. The page embeds it as
- * a JSON field in the initial data blob. Returns null when the page is
- * unreachable or the field is absent.
+ * Parse the gallery DOM into free+chat, non-deprecated candidates. Only a
+ * passed DEPRECATION date drops a model; `available` is not gated, since the
+ * per-model page fetch already drops uncallable models.
  */
-export async function resolveNamespace(
-  fetchImpl: CatalogFetch = fetch,
-): Promise<string | null> {
-  try {
-    const r = await fetchImpl(`https://build.nvidia.com/${env.model}`, {
-      headers: { "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(15_000),
+export function parseGalleryCandidates(html: string): GalleryCandidate[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+
+  const blobs = html.split('\\"resourceType\\":\\"ENDPOINT\\"');
+  const seen = new Map<string, GalleryCandidate>();
+  for (let i = 1; i < blobs.length; i++) {
+    const b = blobs[i];
+    if (!b) continue;
+    if (!b.includes(FREE_NEEDLE) || !b.includes(CHAT_NEEDLE)) continue;
+    const rid = b.match(/\\"resourceId\\":\\"([^"]*)\\"/)?.[1];
+    if (!rid || seen.has(rid)) continue;
+    const dep = b.match(DEPREC_RE);
+    if (dep) {
+      const ms = new Date(
+        Number(dep[3]),
+        Number(dep[1]) - 1,
+        Number(dep[2]),
+      ).getTime();
+      if (!Number.isNaN(ms) && ms < todayMs) continue;
+    }
+    const slug = rid.split("/")[1] ?? rid;
+    const publisher = galleryLabelValue(b, "publisher");
+    if (!publisher) continue;
+    const iso = b.match(/\\"dateCreated\\":\\"([^"]*)\\"/)?.[1];
+    const ms = iso ? Date.parse(iso) : NaN;
+    seen.set(rid, {
+      id: `${publisher}/${slug}`,
+      created: Number.isNaN(ms) ? 0 : Math.floor(ms / 1000),
+      ownedBy: publisher,
     });
-    if (!r.ok) return null;
-    const html = await r.text();
-    return html.match(/\\"namespace\\":\\"([a-z0-9]+)\\"/)?.[1] ?? null;
+  }
+  return [...seen.values()];
+}
+
+// lightpanda is the only client that solves the gallery WAF; if Akamai
+// changes the challenge or lightpanda is missing, fall back to integrate.
+async function fetchGalleryHtml(
+  lightpandaPath: string,
+): Promise<string | null> {
+  let proc: ChildProcess | null = null;
+  let browser: Browser | null = null;
+  try {
+    const cdpPort = await new Promise<number>((resolve, reject) => {
+      const s = createServer();
+      s.on("error", reject);
+      s.listen(0, "127.0.0.1", () => {
+        const p = (s.address() as AddressInfo).port;
+        s.close(() => resolve(p));
+      });
+    });
+    proc = spawn(
+      lightpandaPath,
+      [
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        String(cdpPort),
+        "--log-level",
+        "error",
+      ],
+      { stdio: "ignore" },
+    );
+    const deadline = Date.now() + 15_000;
+    let ready = false;
+    while (Date.now() < deadline && !ready) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+        if (r.ok) ready = true;
+      } catch {}
+      if (!ready) await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!ready) return null;
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    const ctx = await browser.newContext({});
+    const page = await ctx.newPage();
+    await page
+      .goto(GALLERY_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      })
+      .catch(() => {});
+    // The 202 challenge fires domcontentloaded first; the real 200 page (ENDPOINT
+    // marker in the RSC payload) renders once lightpanda solves the WAF, so poll.
+    const marker = '\\"resourceType\\":\\"ENDPOINT\\"';
+    for (let i = 0; i < 30; i++) {
+      const html = await page.content();
+      if (html.includes(marker)) return html;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return null;
   } catch {
     return null;
+  } finally {
+    try {
+      await browser?.close();
+    } catch {}
+    proc?.kill();
   }
 }
 
-// Fallback catalog refresh interval when the response has no Cache-Control.
-const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
-
-export interface CatalogResult {
-  entries: CatalogEntry[];
-  refreshMs: number;
-}
-
-function parseMaxAge(cc: string | null): number | null {
-  if (!cc) return null;
-  const m = cc.match(/max-age=(\d+)/i);
-  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
-}
-
 /**
- * Fetch the servable catalog. Throws if the integrate list itself is
- * unreachable; individual queue probes that fail are skipped silently.
- * Returns entries plus a refresh interval derived from the response Cache-Control.
+ * Build the servable catalog. Gallery candidates (free chat, lightpanda) need
+ * only a real page (chat label vouches for text in/out); integrate fallback
+ * candidates must also report Text modalities, and set the refresh interval.
  */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
+  onEvent?: (e: CatalogEvent) => void;
+  lightpandaPath?: string;
+  /** Pre-fetched gallery candidates; skips the lightpanda gallery fetch when set. */
+  galleryCandidates?: GalleryCandidate[];
 }): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
-  const r = await fetchImpl(INTEGRATE_MODELS_URL, {
-    headers: { "user-agent": USER_AGENT },
-  });
-  if (!r.ok) throw new Error(`integrate model list ${r.status}`);
-  const refreshMs =
-    parseMaxAge(r.headers.get("cache-control")) ?? DEFAULT_REFRESH_MS;
-  const list = (await r.json()) as {
-    data: Array<{ id: string; created: number; owned_by: string }>;
-  };
-  if (!Array.isArray(list.data))
-    throw new Error("integrate model list malformed");
+  const onEvent = opts?.onEvent;
 
-  const entries = await mapPool(
-    list.data,
-    opts?.concurrency ?? 4,
-    async (m) => {
-      for (const slug of slugCandidates(m.id)) {
-        const functionId = await probeFunctionId(slug, fetchImpl);
-        if (functionId)
-          return {
+  type Cand = { id: string; created: number; owned_by: string };
+  let candidates: Cand[] | null = null;
+  let refreshMs = DEFAULT_REFRESH_MS;
+  let chatPreFiltered = false;
+
+  if (opts?.galleryCandidates && opts.galleryCandidates.length > 0) {
+    candidates = opts.galleryCandidates.map((m) => ({
+      id: m.id,
+      created: m.created,
+      owned_by: m.ownedBy,
+    }));
+    chatPreFiltered = true;
+    onEvent?.({ type: "gallery-done", count: candidates.length });
+  } else if (opts?.lightpandaPath) {
+    onEvent?.({ type: "gallery-start" });
+    try {
+      const html = await fetchGalleryHtml(opts.lightpandaPath);
+      if (html) {
+        const gc = parseGalleryCandidates(html);
+        if (gc.length > 0) {
+          candidates = gc.map((m) => ({
             id: m.id,
-            slug,
-            functionId,
-            created: typeof m.created === "number" ? m.created : 0,
-            ownedBy: m.owned_by,
-          };
+            created: m.created,
+            owned_by: m.ownedBy,
+          }));
+          chatPreFiltered = true;
+          onEvent?.({ type: "gallery-done", count: candidates.length });
+        }
       }
+    } catch {
+      candidates = null;
+    }
+    if (!candidates) onEvent?.({ type: "fallback", reason: "lightpanda/WAF" });
+  }
+
+  if (!candidates) {
+    const r = await fetchImpl(INTEGRATE_MODELS_URL, {
+      headers: { "user-agent": USER_AGENT },
+    });
+    if (!r.ok) throw new Error(`integrate model list ${r.status}`);
+    refreshMs =
+      parseMaxAge(r.headers.get("cache-control")) ?? DEFAULT_REFRESH_MS;
+    const list = (await r.json()) as {
+      data: Array<{ id: string; created: number; owned_by: string }>;
+    };
+    if (!Array.isArray(list.data))
+      throw new Error("integrate model list malformed");
+    candidates = list.data;
+    onEvent?.({ type: "integrate-done", count: candidates.length });
+  }
+
+  const total = candidates.length;
+  const concurrency = opts?.concurrency ?? 4;
+  onEvent?.({ type: "fetch-start", count: total, concurrency });
+
+  let done = 0;
+  let kept = 0;
+  const entries = await mapPool(
+    candidates,
+    concurrency,
+    async (m): Promise<CatalogEntry | null> => {
+      const emit = (outcome: "kept" | "dropped", reason?: string) =>
+        onEvent?.({
+          type: "model",
+          fetched: ++done,
+          total,
+          id: m.id,
+          outcome,
+          reason,
+        });
+      for (const slug of slugCandidates(m.id)) {
+        const page = await fetchModelPage(m.id, slug, fetchImpl);
+        if (!page) continue;
+        if (!chatPreFiltered && !isTextInTextOut(page)) {
+          emit("dropped", "not text in/out");
+          return null;
+        }
+        kept++;
+        emit("kept");
+        return {
+          id: m.id,
+          slug,
+          namespace: page.namespace,
+          functionId: page.functionId,
+          created: typeof m.created === "number" ? m.created : 0,
+          ownedBy: m.owned_by,
+        } as CatalogEntry;
+      }
+      emit("dropped", "no deployment page");
       return null;
     },
   );
 
+  onEvent?.({ type: "fetch-end", total, kept, dropped: total - kept });
+
   const sorted = entries
-    .filter((e): e is CatalogEntry => e !== null && isTextCapable(e.id))
+    .filter((e): e is CatalogEntry => e !== null)
     .sort((a, b) => a.id.localeCompare(b.id));
   return { entries: sorted, refreshMs };
 }
