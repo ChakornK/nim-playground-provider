@@ -7,18 +7,13 @@ Get unlimited free access near-frontier models like GLM-5.2 and Minimax-M3 via N
 The easiest way to run the proxy is with [Docker](https://www.docker.com/).
 
 ```bash
-git clone https://github.com/ChakornK/nim-playground-provider.git
-cd nim-playground-provider
-docker build -t nim-playground-provider .
-docker run -p 8787:8787 nim-playground-provider
+docker run -p 8787:8787 ghcr.io/chakornk/nim-playground-provider
 ```
-
-The image includes [Lightpanda](https://github.com/lightpanda-io/browser), so you skip the separate install.
 
 To secure the proxy, add an authorization key with `-e API_KEY=secret1`:
 
 ```bash
-docker run -e API_KEY=secret1 -p 8787:8787 nim-playground-provider
+docker run -e API_KEY=secret1 -p 8787:8787 ghcr.io/chakornk/nim-playground-provider
 ```
 
 ## Use it in a chat app or agent harness
@@ -40,6 +35,8 @@ curl http://localhost:8787/v1/models
 You need Node.js 22 or newer, and [Lightpanda](https://github.com/lightpanda-io/browser) on your `PATH` (or set `LIGHTPANDA_PATH`). Then:
 
 ```bash
+git clone https://github.com/ChakornK/nim-playground-provider.git
+cd nim-playground-provider
 npm install
 npm start
 ```
