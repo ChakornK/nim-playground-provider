@@ -41,7 +41,7 @@ npm install
 npm start
 ```
 
-Add a key with `API_KEY=secret1 npm start`.
+Add a key with `API_KEY=secret1 npm start` or by creating a `.env` file.
 
 ## Configuration
 
