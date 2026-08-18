@@ -13,7 +13,7 @@ docker build -t nim-playground-provider .
 docker run -p 8787:8787 nim-playground-provider
 ```
 
-The image includes [Lightpanda](https://github.com/lightpanda-io/browser), so you skip the separate install. 
+The image includes [Lightpanda](https://github.com/lightpanda-io/browser), so you skip the separate install.
 
 To secure the proxy, add an authorization key with `-e API_KEY=secret1`:
 
@@ -74,21 +74,12 @@ curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completion
 
 ### `POST /v1/chat/completions`
 
-Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. Also accepts `enable_thinking` (defaults to `true`) to toggle the model's reasoning mode.
-
-Returns streaming or non-streaming completions in OpenAI format. `model` is routed to the matching NVIDIA deployment; an unknown model returns `404 model_not_found`.
+Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. `enable_thinking` (default `true`) toggles reasoning mode. The proxy doesn't support `reasoning.effort`.
 
 ### `GET /v1/models`
 
-Returns the model list. The proxy prefers the build.nvidia.com gallery (whose model cards mark `Free Endpoint` + `chat` models) as the candidate source, fetching each model's `build.nvidia.com` page for its deploy namespace, per-model function ID, and input/output modalities; when the gallery is unreachable it falls back to NVIDIA's public model list. The proxy serves a model only when its page lists Text as both an input and an output modality, and drops entries past their `DEPRECATION` date. LLMs and vision-language models qualify; embeddings, speech, image/video generation, and other non-text models do not. Models with no `build.nvidia.com` page are dropped. If the catalog cannot be fetched, the proxy falls back to the single `MODEL` above.
+Returns the list of available models.
 
-## How it works
+## Contributing
 
-NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This proxy spawns a [Lightpanda](https://github.com/lightpanda-io/browser) headless browser and drives it over CDP via Playwright to mint hCaptcha tokens on `build.nvidia.com`, keeping a warm pool. Each request pulls a token from the pool, calls the NVIDIA API, and translates the response into OpenAI format.
-
-## Tests
-
-```bash
-npm test                    # unit + offline integration
-NVIDIA_LIVE=1 npm test      # live smoke tests
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
