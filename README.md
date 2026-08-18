@@ -1,25 +1,50 @@
 # NVIDIA NIM Playground Provider
 
-A proxy that turns NVIDIA's free inference playground into an OpenAI-compatible API. Point any OpenAI client at it and use models without an API key or NVIDIA account.
+Get unlimited free access near-frontier models like GLM-5.2 and Minimax-M3 via NVIDIA's AI chat models for anything that uses the OpenAI API.
 
-## Requirements
+## Quick start with Docker
 
-[Lightpanda](https://github.com/lightpanda-io/browser) must be installed. The proxy finds it on your `PATH`, or you can point to it with `LIGHTPANDA_PATH`.
+The easiest way to run the proxy is with [Docker](https://www.docker.com/).
 
-## Quick start
+```bash
+git clone https://github.com/ChakornK/nim-playground-provider.git
+cd nim-playground-provider
+docker build -t nim-playground-provider .
+docker run -p 8787:8787 nim-playground-provider
+```
+
+The image includes [Lightpanda](https://github.com/lightpanda-io/browser), so you skip the separate install. 
+
+To secure the proxy, add an authorization key with `-e API_KEY=secret1`:
+
+```bash
+docker run -e API_KEY=secret1 -p 8787:8787 nim-playground-provider
+```
+
+## Use it in a chat app or agent harness
+
+Use these settings for your favorite chat UIs and agent harnesses that accept a custom OpenAI provider:
+
+- **Base URL:** `http://localhost:8787/v1`
+- **API key:** any non-empty string, or your `API_KEY` value when you set one
+- **Model:** any id from `GET /v1/models`
+
+See the model list:
+
+```bash
+curl http://localhost:8787/v1/models
+```
+
+## Run without Docker
+
+You need Node.js 22 or newer, and [Lightpanda](https://github.com/lightpanda-io/browser) on your `PATH` (or set `LIGHTPANDA_PATH`). Then:
 
 ```bash
 npm install
 npm start
 ```
 
-The server listens on `http://localhost:8787`.
-
-```bash
-curl http://localhost:8787/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
-```
+Add a key with `API_KEY=secret1 npm start`.
 
 ## Configuration
 
@@ -36,7 +61,7 @@ All settings use environment variables. None are required.
 
 ## Authentication
 
-By default the proxy requires no key. Set `API_KEY` to one or more secret keys, separated by commas, and every request must carry one in its `Authorization` header. Leave `API_KEY` unset to disable authentication.
+By default the proxy requires no key. Set `API_KEY` to one or more comma-separated secrets to require a bearer token on every request.
 
 ```bash
 API_KEY=secret1,secret2 npm start
@@ -60,15 +85,6 @@ Returns the model list. The proxy prefers the build.nvidia.com gallery (whose mo
 ## How it works
 
 NVIDIA's free endpoint gates access behind a single-use hCaptcha token. This proxy spawns a [Lightpanda](https://github.com/lightpanda-io/browser) headless browser and drives it over CDP via Playwright to mint hCaptcha tokens on `build.nvidia.com`, keeping a warm pool. Each request pulls a token from the pool, calls the NVIDIA API, and translates the response into OpenAI format.
-
-## Docker
-
-```bash
-docker build -t nim-playground-provider .
-docker run -e API_KEY=secret1 -p 8787:8787 nim-playground-provider
-```
-
-The container bundles Lightpanda and uses the same environment variables as local execution.
 
 ## Tests
 
