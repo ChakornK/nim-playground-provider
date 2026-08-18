@@ -337,7 +337,7 @@ test("streaming completion passes translated SSE through and burns one token", a
   const data = frames
     .filter((f) => f.startsWith("data: ") && !f.includes("[DONE]"))
     .map((f) => JSON.parse(f.replace(/^data: /, "")));
-  // usage only on the final usage-only frame (choices: []), stripped from delta frames
+  // usage only on the final usage-only frame (empty choices), stripped from delta frames
   expect(data.filter((c) => c.usage)).toHaveLength(1);
   expect(data.filter((c) => c.usage)[0].choices).toEqual([]);
 

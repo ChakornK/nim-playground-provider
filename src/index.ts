@@ -18,7 +18,7 @@ const pool = new TokenPool(session, env.poolSize, {
 });
 const upstream = new Upstream();
 
-// Resolve the default route first so chat works even if the catalog build fails.
+// Resolve default route first so chat works if catalog build fails.
 console.log(
   `nim-playground-provider: fetching default route for ${env.model}...`,
 );
@@ -34,7 +34,7 @@ if (defaultRoute) {
   );
 }
 
-// Catalog is awaited at startup; a failed build re-triggers on /v1/models, then
+// Catalog awaited at startup, failed build re-triggers on /v1/models, then
 // refreshes on an interval.
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let catalog: CatalogEntry[] = [];

@@ -95,7 +95,7 @@ test.skipIf(!LIVE)(
       const text = await r.text();
       // structured tool_calls present
       expect(text).toContain('"tool_calls"');
-      // GLM's native XML convention must NOT leak into content
+      // GLM's native XML must not leak into content
       expect(text).not.toContain("<tool_call>");
       const done = text.trim().endsWith("data: [DONE]");
       expect(done).toBe(true);

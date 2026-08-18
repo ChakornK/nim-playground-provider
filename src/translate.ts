@@ -1,13 +1,9 @@
 import { parseSSE } from "./sse.ts";
 import type { OpenAIChunk } from "./types.ts";
 
-/**
- * Transform upstream SSE frames into OpenAI SSE.
- *
- * Upstream sends `usage` on every frame; strict OpenAI clients expect it on at
- * most the final frame. We hold back one frame (lookahead) and emit it stripped,
- * only keeping `usage` on the last frame before [DONE].
- */
+/** Transform upstream SSE frames into OpenAI SSE. Upstream sends usage on every
+ * frame, strict OpenAI clients want it only on the final frame. Hold one frame
+ * (lookahead), emit it stripped, keep usage only on the last frame before [DONE]. */
 export async function* transformStream(
   upstreamBody: ReadableStream<Uint8Array>,
   onChunk?: (chunk: OpenAIChunk) => void,
@@ -32,7 +28,7 @@ export async function* transformStream(
     try {
       obj = JSON.parse(payload) as Record<string, unknown>;
     } catch {
-      continue; // drop malformed frames rather than killing the stream
+      continue; // drop malformed frames, don't kill the stream
     }
     if (!obj || typeof obj !== "object") continue;
     if (
@@ -47,6 +43,6 @@ export async function* transformStream(
     yield* flush(false);
     held = chunk;
   }
-  // stream ended without [DONE]: emit anything held with usage intact
+  // stream ended without [DONE], emit anything held with usage intact
   yield* flush(true);
 }

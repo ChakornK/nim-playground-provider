@@ -1,7 +1,5 @@
-/**
- * Pool of single-use tokens. Refills in the background up to `capacity`.
- * `acquire()` returns a token immediately if one is warm, else waits for a mint.
- */
+/** Pool of single-use tokens, refills in the background up to capacity.
+ * acquire() returns a warm token immediately, else waits for a mint. */
 export interface TokenSource {
   mintToken(): Promise<string>;
 }
@@ -15,7 +13,7 @@ interface Waiter {
 export interface TokenPoolOpts {
   /** How long a cold `acquire()` waits for a mint before rejecting. */
   acquireTimeoutMs?: number;
-  /** Hard limit on concurrent waiters; new acquirers beyond it are rejected. */
+  /** Hard limit on concurrent waiters, acquirers beyond it are rejected. */
   maxWaiters?: number;
   /** Extra mint attempts after the first failure within one refill. */
   maxRetries?: number;
@@ -40,7 +38,7 @@ export class TokenPool {
     this.opts = opts;
   }
 
-  /** Start background refilling immediately, without blocking. */
+  /** Start background refilling immediately, non-blocking. */
   prewarm() {
     this.scheduleRefill();
   }
@@ -77,15 +75,15 @@ export class TokenPool {
   }
 
   private async refill() {
-    // Target: keep `tokens` full and all waiters satisfied. Mint one at a time
-    // (BrowserSession serializes mints anyway).
+    // Keep tokens full and waiters satisfied. Mint one at a time
+    // (BrowserSession serializes anyway).
     let deficit = this.capacity - this.tokens.length + this.waiting.length;
     while (deficit > 0) {
       let token: string;
       try {
         token = await this.mintWithRetry();
       } catch (err) {
-        // Fail all current waiters with this error; re-arm so the pool heals
+        // Fail all current waiters with this error, re-arm so the pool heals
         // without waiting for the next acquire.
         const error = err instanceof Error ? err : new Error(String(err));
         this.deliverError(error);

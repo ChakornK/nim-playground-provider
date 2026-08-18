@@ -8,16 +8,12 @@ import {
 } from "playwright-core";
 import { env, USER_AGENT } from "./constants.ts";
 
-// Fallback hCaptcha API URL; overridden when the page provides its own script.
 const HCAPTCHA_API_FALLBACK =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
-// hCaptcha tokens are domain-bound to the sitekey's registered origin
+// hCaptcha tokens are domain-bound to the sitekey origin
 const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
-// Fallback sitekey used when the page does not expose one via data-sitekey.
 const HCAPTCHA_SITEKEY_FALLBACK = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 
-// Ensure the hCaptcha API URL includes the render=explicit and onload params
-// so the script calls window.__hcLoad() when ready.
 function appendOnloadParam(src: string): string {
   const u = new URL(src);
   u.searchParams.set("render", "explicit");
@@ -25,8 +21,6 @@ function appendOnloadParam(src: string): string {
   return u.toString();
 }
 
-// Build a Chrome UA from the CDP-reported version; falls back to the static
-// UA when the version string is missing or malformed.
 function userAgentFromVersion(cdpBrowser: string): string {
   const match = cdpBrowser.match(/Chrome\/(\d+\.\d+\.\d+\.\d+)/);
   if (match) {
@@ -41,7 +35,6 @@ const MINT_ATTEMPTS = 3;
 const MINT_TIMEOUT_MS = 60_000;
 const TOKEN_POLL_TIMEOUT_MS = 30_000;
 
-/** Resolve `p`, or reject with `Error(msg)` after `ms`. The timer is always cleared. */
 export async function withTimeout<T>(
   p: Promise<T>,
   ms: number,
@@ -68,9 +61,7 @@ export class BrowserSession {
   private minting: Promise<string> | null = null;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
   private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
-  // One persistent invisible hCaptcha widget. Reused via reset+execute so the
-  // page never accumulates one widget per mint (that leaked into multi-hundred-MB
-  // browser RSS under concurrent token requests).
+  // Persistent invisible widget, reused via reset+execute to avoid per-mint leakage
   private widgetId: string | null = null;
   private opts: { lightpandaPath?: string };
 
@@ -78,7 +69,7 @@ export class BrowserSession {
     this.opts = opts;
   }
 
-  /** Mint one fresh single-use hCaptcha token. Serialized; never reused. */
+  /** Mint one fresh single-use hCaptcha token. Serialized, never reused. */
   async mintToken(): Promise<string> {
     if (this.minting) await this.minting.catch(() => {});
     this.minting = withTimeout(
@@ -86,8 +77,7 @@ export class BrowserSession {
       MINT_TIMEOUT_MS,
       "hcaptcha mint timed out",
     ).catch(async (e) => {
-      // Only a persistent failure reaches here; the browser is closed so the
-      // next refill starts from a clean page instead of a stuck widget.
+      // Persistent failure, close browser so next mint starts clean
       await this.close();
       throw e;
     });
@@ -111,7 +101,6 @@ export class BrowserSession {
     }
   }
 
-  /** Retry recoverable mint failures on the same page before giving up. */
   private async mintWithRetry(): Promise<string> {
     let lastError: unknown;
     for (let attempt = 0; attempt < MINT_ATTEMPTS; attempt++) {
@@ -129,7 +118,6 @@ export class BrowserSession {
     const exe = this.opts.lightpandaPath;
     if (!exe) throw new Error("LIGHTPANDA_PATH not set");
 
-    // Reserve a free port so we don't collide with another listener (adb uses 9222).
     const cdpPort = await new Promise<number>((resolve, reject) => {
       const s = createServer();
       s.on("error", reject);
@@ -139,7 +127,6 @@ export class BrowserSession {
       });
     });
 
-    // Drive lightpanda over CDP instead of launching Chromium.
     this.proc = spawn(
       exe,
       [
@@ -154,7 +141,6 @@ export class BrowserSession {
       { stdio: "ignore" },
     );
 
-    // Wait for the CDP endpoint before connecting.
     const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
     let cdpVersion: string | null = null;
     while (Date.now() < deadline) {
@@ -180,7 +166,6 @@ export class BrowserSession {
       timeout: MINT_TIMEOUT_MS,
     });
 
-    // Extract the hCaptcha sitekey and API URL from the page; fall back to defaults.
     const scraped = await this.page.evaluate(() => {
       const keyEl = document.querySelector("[data-sitekey]");
       const scriptEl = document.querySelector<HTMLScriptElement>(
@@ -196,7 +181,7 @@ export class BrowserSession {
       this.hcaptchaApiUrl = appendOnloadParam(scraped.apiUrl);
     }
 
-    // Load hCaptcha api.js; it calls window.__hcLoad() when ready
+    // Load hCaptcha api.js, calls __hcLoad() when ready
     await this.page.evaluate((apiUrl) => {
       const w = window as unknown as Window & { __hcLoad?: () => void };
       return new Promise<void>((resolve, reject) => {
@@ -208,8 +193,6 @@ export class BrowserSession {
       });
     }, this.hcaptchaApiUrl);
 
-    // Render one persistent invisible widget; every mint re-executes this same
-    // widget (see mintTokenInner) instead of growing a new one per mint.
     this.widgetId = await this.page.evaluate((sitekey) => {
       const w = window as unknown as Window & {
         hcaptcha: { render: (id: string, o: object) => string };
@@ -230,7 +213,6 @@ export class BrowserSession {
     const widgetId = this.widgetId;
     if (!widgetId) throw new Error("no widget");
 
-    // reset + execute the persistent widget to get a fresh token
     await page.evaluate((id) => {
       const w = window as unknown as Window & {
         hcaptcha: {
@@ -242,8 +224,6 @@ export class BrowserSession {
       return w.hcaptcha.execute(id);
     }, widgetId);
 
-    // Poll for the token instead of sleeping a fixed duration: latency tracks
-    // the real solve time rather than a worst-case estimate.
     await page.waitForFunction(
       (id) => {
         const w = window as unknown as Window & {

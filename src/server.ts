@@ -17,15 +17,15 @@ export interface ServerDeps {
   pool: TokenPool;
   upstream: Upstream;
   model?: string;
-  /** Allowed bearer keys; when omitted, falls back to env.apiKeys. Empty array disables auth. */
+  /** Allowed bearer keys, falls back to env.apiKeys if omitted. Empty array disables auth. */
   apiKeys?: string[];
   port?: number;
   host?: string;
-  /** Built at startup by `buildCatalog()`. Falls back to the default route when absent. */
+  /** Built at startup by buildCatalog(), falls back to default route when absent. */
   catalog?: CatalogEntry[];
-  /** Mutable catalog source; when provided, the server reads it per request instead of the static `catalog`. */
+  /** Mutable catalog source, read per request instead of the static catalog when set. */
   getCatalog?: () => CatalogEntry[];
-  /** Dynamically resolved fallback deploy route for the default model, used when the catalog is empty. */
+  /** Fallback deploy route for the default model, used when the catalog is empty. */
   defaultRoute?: ModelRoute;
 }
 
@@ -123,8 +123,8 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       });
       res.writeHead(response.status, headerObj);
       if (response.body) {
-        // DOM and node:stream/web define separate ReadableStream types; at
-        // runtime they're the same Web Streams object.
+        // DOM and node:stream/web have separate ReadableStream types,
+        // at runtime they're the same object.
         Readable.fromWeb(response.body as never).pipe(res);
       } else {
         res.end();
@@ -220,8 +220,8 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       );
     }
 
-    // A rejected token (expired or blocked) yields a client error that mentions
-    // the captcha; other statuses are returned as-is. Retry with a fresh token.
+    // A rejected token (expired or blocked) yields a captcha-mentioning client
+    // error, other statuses pass through. Retry with a fresh token.
     const isTokenRejection = (status: number, text: string) =>
       (status === 400 || status === 401 || status === 403) &&
       /captcha|hcaptcha|token/i.test(text);
@@ -282,7 +282,6 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       return json(completion, 200);
     }
 
-    // streaming
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
@@ -293,7 +292,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             controller.enqueue(enc.encode(frame));
           }
         } catch {
-          // upstream dropped mid-stream; close without a partial [DONE]
+          // upstream dropped mid-stream, close without a partial [DONE]
         } finally {
           try {
             controller.close();

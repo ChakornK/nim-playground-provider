@@ -36,7 +36,7 @@ export function buildUpstreamBody(params: {
 }
 
 export class Upstream {
-  /** Fetch a completion from NVIDIA. Resolves once headers arrive; body is consumed by caller. */
+  /** Fetch a completion from NVIDIA. Resolves when headers arrive, caller consumes the body. */
   async chat(params: UpstreamChatParams): Promise<Response> {
     const route = params.route;
     const body = buildUpstreamBody({

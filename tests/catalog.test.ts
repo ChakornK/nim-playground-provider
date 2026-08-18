@@ -30,7 +30,7 @@ test("slugCandidates tries the bare name then dots->underscores (deduped)", () =
     "llama-3.1-8b-instruct",
     "llama-3_1-8b-instruct",
   ]);
-  // dotless ids dedupe to a single candidate (one page fetch, not two).
+  // dotless ids dedupe to a single candidate.
   expect(slugCandidates("google/gemma-3-12b-it")).toEqual(["gemma-3-12b-it"]);
 });
 
@@ -96,13 +96,13 @@ test("buildCatalog keeps page Text-in/Text-out models and drops the rest", async
         { status: 200 },
       );
     if (u === "https://build.nvidia.com/meta/llama-3_1-8b-instruct")
-      // underscore slug is the real page (bare dots slug lands)
+      // underscored slug returns the real page, bare dots slug lands on the generic page
       return new Response(
         pageHTML({ functionId: "llama-fn", input: ["Text"], output: ["Text"] }),
         { status: 200 },
       );
     if (u === "https://build.nvidia.com/baai/bge-m3")
-      // deployed but no modalities field (older template) -> excluded
+      // deployed but no modalities field -> excluded
       return new Response(pageHTML({ functionId: "bge-fn" }), { status: 200 });
     if (u === "https://build.nvidia.com/minimaxai/minimax-m3")
       // multimodal input, Text output -> included
@@ -125,7 +125,7 @@ test("buildCatalog keeps page Text-in/Text-out models and drops the rest", async
         { status: 200 },
       );
     if (u === "https://build.nvidia.com/nvidia/cosmos-reason2-8b")
-      // stale integrate id -> 308 rename to a different model -> skipped
+      // stale integrate id -> 308 rename -> skipped
       return new Response("", {
         status: 308,
         headers: {
@@ -178,7 +178,7 @@ test("buildCatalog propagates integrate-list failure", async () => {
 });
 
 test("buildCatalog trusts the gallery chat label and skips the per-page modality check", async () => {
-  // A chat-labeled page that omits the modality arrays is kept via the gallery label.
+  // A chat-labeled page omitting modality arrays is kept via the gallery label.
   const fetchImpl = async (url: string | URL) => {
     if (String(url) === "https://build.nvidia.com/thinkingmachines/inkling")
       return new Response(pageHTML({ functionId: "ink-fn" }), { status: 200 });
@@ -255,9 +255,7 @@ test("resolveModelRoute returns null when no candidate is a real model page", as
   ).toBeNull();
 });
 
-// --- Gallery SSR pre-filter ---------------------------------------------------
-
-// Mirrors the backslash-escaped JSON shape the gallery RSC payload embeds.
+// Mirrors the escaped JSON shape the gallery RSC payload embeds.
 function galleryBlob(o: {
   rid: string;
   chat?: boolean; // default true

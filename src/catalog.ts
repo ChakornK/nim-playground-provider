@@ -1,6 +1,3 @@
-// NIM catalog this proxy serves. Gallery SSR candidates (free chat, lightpanda)
-// backed by the integrate list; each model's page supplies the route.
-
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { chromium, type Browser } from "playwright-core";
@@ -54,7 +51,7 @@ function parseEscapedArray(slice: string | undefined): string[] {
 function parsePage(html: string): PageData | null {
   const namespace = html.match(NS_RE)?.[1];
   const functionId = html.match(NVCF_RE)?.[1];
-  // NVIDIA serializes an undeployed model as `nvcfFunctionId: "None"` -> not servable.
+  // NVIDIA marks undeployed models with nvcfFunctionId="None", not servable
   if (!namespace || !functionId || functionId === "None") return null;
   return {
     namespace,
@@ -64,7 +61,7 @@ function parsePage(html: string): PageData | null {
   };
 }
 
-/** Predict-path candidates for an OpenAI id: the bare name, then dots→underscores. */
+/** Predict-path candidates for an OpenAI id, bare name then dots→underscores. */
 export function slugCandidates(id: string): string[] {
   const name = id.split("/", 2)[1] ?? id;
   const underscored = name.replaceAll(".", "_");
@@ -77,8 +74,8 @@ async function fetchModelPage(
   fetchImpl: CatalogFetch,
 ): Promise<PageData | null> {
   try {
-    // redirect:"error" skips stale ids whose page 308-renames; following would
-    // mis-attribute the renamed route back to the old id.
+    // redirect=error skips stale ids that 308-rename, else we'd mis-attribute
+    // the renamed route to the old id.
     const r = await fetchImpl(pageUrl(id, slug), {
       headers: PAGE_HEADERS,
       redirect: "error",
@@ -91,7 +88,6 @@ async function fetchModelPage(
   }
 }
 
-/** Include iff the page reports Text among input AND output modalities. */
 function isTextInTextOut(page: PageData): boolean {
   return (
     page.inputModalities.includes("Text") &&
@@ -99,11 +95,9 @@ function isTextInTextOut(page: PageData): boolean {
   );
 }
 
-/**
- * Resolve a single model's deploy route from its build.nvidia.com page:
- * `modelId` = `{namespace}/{winning slug}`, function id = page `nvcfFunctionId`.
- * Returns null when no candidate slug is a real model page.
- */
+/** Resolve a model's deploy route from its build.nvidia.com page.
+ * modelId = {namespace}/{winning slug}, functionId = page nvcfFunctionId,
+ * null when no candidate slug is a real page. */
 export async function resolveModelRoute(
   id: string,
   fetchImpl: CatalogFetch = fetch,
@@ -119,7 +113,6 @@ export async function resolveModelRoute(
   return null;
 }
 
-// Fallback catalog refresh interval when the response has no Cache-Control.
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 export interface CatalogResult {
@@ -170,20 +163,20 @@ async function mapPool<T, R>(
   return out;
 }
 
-// /models?pageSize=1024 sits behind a WAF plain fetch can't solve; lightpanda
-// solves it over CDP. The rendered DOM embeds each model card as escaped JSON
-// (RSC payload) with labels (chat, Free Endpoint), pre-filtering to ~32 vs 102.
+// /models?pageSize=1024 is behind a WAF plain fetch can't solve, lightpanda
+// solves it over CDP. DOM embeds each model card as escaped JSON (RSC payload)
+// with labels (chat, Free Endpoint), pre-filtering before the per-page fetch.
 
 export interface GalleryCandidate {
-  /** Public model id `{publisher}/{slug}` (same shape as integrate ids). */
+  /** Public model id {publisher}/{slug}, same shape as integrate ids. */
   id: string;
-  /** Epoch seconds, from the gallery `dateCreated` ISO field. */
+  /** Epoch seconds from the gallery dateCreated ISO field. */
   created: number;
-  /** The gallery `publisher` label (= public org prefix of the id). */
+  /** Gallery publisher label, the id's org prefix. */
   ownedBy: string;
 }
 
-// Needles match the escaped JSON shape `\"k\":\"v\"` inside the RSC string.
+// Needles match the escaped key-value shape inside the RSC string.
 const FREE_NEEDLE = '\\"Free Endpoint\\"';
 const CHAT_NEEDLE = '\\"playgroundType\\",\\"values\\":[\\"chat\\"';
 const DEPREC_RE =
@@ -198,11 +191,9 @@ function galleryLabelValue(blob: string, key: string): string {
   return end > 0 ? blob.slice(start, end) : "";
 }
 
-/**
- * Parse the gallery DOM into free+chat, non-deprecated candidates. Only a
- * passed DEPRECATION date drops a model; `available` is not gated, since the
- * per-model page fetch already drops uncallable models.
- */
+/** Parse the gallery DOM into free+chat, non-deprecated candidates.
+ * Only a passed DEPRECATION date drops a model, `available` is not gated,
+ * the per-model page fetch already drops uncallable models. */
 export function parseGalleryCandidates(html: string): GalleryCandidate[] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -239,8 +230,7 @@ export function parseGalleryCandidates(html: string): GalleryCandidate[] {
   return [...seen.values()];
 }
 
-// lightpanda is the only client that solves the gallery WAF; if Akamai
-// changes the challenge or lightpanda is missing, fall back to integrate.
+// Only lightpanda solves the gallery WAF, fall back to integrate when unavailable.
 async function fetchGalleryHtml(
   lightpandaPath: string,
 ): Promise<string | null> {
@@ -287,8 +277,8 @@ async function fetchGalleryHtml(
         timeout: 30_000,
       })
       .catch(() => {});
-    // The 202 challenge fires domcontentloaded first; the real 200 page (ENDPOINT
-    // marker in the RSC payload) renders once lightpanda solves the WAF, so poll.
+    // domcontentloaded fires on the WAF challenge page before the real one
+    // renders, poll for the ENDPOINT marker once lightpanda solves the WAF.
     const marker = '\\"resourceType\\":\\"ENDPOINT\\"';
     for (let i = 0; i < 30; i++) {
       const html = await page.content();
@@ -306,17 +296,15 @@ async function fetchGalleryHtml(
   }
 }
 
-/**
- * Build the servable catalog. Gallery candidates (free chat, lightpanda) need
- * only a real page (chat label vouches for text in/out); integrate fallback
- * candidates must also report Text modalities, and set the refresh interval.
- */
+/** Build the servable catalog. Gallery candidates (free chat) need only a
+ * real page (chat label vouches for text in/out), integrate fallback
+ * candidates must also report Text modalities and set the refresh interval. */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
   onEvent?: (e: CatalogEvent) => void;
   lightpandaPath?: string;
-  /** Pre-fetched gallery candidates; skips the lightpanda gallery fetch when set. */
+  /** Pre-fetched gallery candidates, skips the lightpanda gallery fetch when set. */
   galleryCandidates?: GalleryCandidate[];
 }): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
