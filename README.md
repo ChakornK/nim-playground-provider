@@ -47,14 +47,14 @@ Add a key with `API_KEY=secret1 npm start` or by creating a `.env` file.
 
 All settings use environment variables. None are required.
 
-| Variable          | Default         | Purpose                                                   |
-| ----------------- | --------------- | --------------------------------------------------------- |
-| `PORT`            | `8787`          | Listen port                                               |
-| `HOST`            | `127.0.0.1`     | Bind address (localhost by default)                       |
-| `POOL_SIZE`       | `2`             | Pre-minted hCaptcha tokens to keep warm                   |
-| `LIGHTPANDA_PATH` | (auto-detected) | Path to the Lightpanda binary, overrides PATH detection   |
-| `MODEL`           | `z-ai/glm-5.2`  | Fallback model name                                       |
-| `API_KEY`         | (unset)         | Comma-separated bearer keys; empty or unset disables auth |
+| Variable          | Default                | Purpose                                                   |
+| ----------------- | ---------------------- | --------------------------------------------------------- |
+| `PORT`            | `8787`                 | Listen port                                               |
+| `HOST`            | `127.0.0.1`            | Bind address (localhost by default)                       |
+| `POOL_SIZE`       | `2`                    | Pre-minted hCaptcha tokens to keep warm                   |
+| `LIGHTPANDA_PATH` | (auto-detected)        | Path to the Lightpanda binary, overrides PATH detection   |
+| `MODEL`           | `minimaxai/minimax-m3` | Fallback model name                                       |
+| `API_KEY`         | (unset)                | Comma-separated bearer keys; empty or unset disables auth |
 
 ## Authentication
 

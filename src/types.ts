@@ -6,9 +6,9 @@ export interface OpenAIMessage {
 }
 
 export interface CatalogEntry {
-  /** OpenAI-compatible model, the body model, e.g. z-ai/glm-5.2. */
+  /** OpenAI-compatible model, the body model, e.g. minimaxai/minimax-m3. */
   id: string;
-  /** Predict path segment, e.g. glm-5.2 or llama-3_1-8b-instruct. */
+  /** Predict path segment, e.g. minimax-m3 or llama-3_1-8b-instruct. */
   slug: string;
   /** Predict-path namespace from the model page, falls back to NAMESPACE. */
   namespace?: string;

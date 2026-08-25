@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
-export const DEFAULT_MODEL = "z-ai/glm-5.2";
+export const DEFAULT_MODEL = "minimaxai/minimax-m3";
 export const UPSTREAM_BASE = "https://api.ngc.nvidia.com/v2/predict";
 export const NAMESPACE = "qc69jvmznzxy"; // predict/queue deployment namespace
 export const ORIGIN = "https://build.nvidia.com";

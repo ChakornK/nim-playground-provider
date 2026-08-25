@@ -63,9 +63,12 @@ const deps: ServerDeps = {
     },
   } as unknown as TokenPool,
   upstream: upstreamMock(),
-  model: "z-ai/glm-5.2",
+  model: "minimaxai/minimax-m3",
   port: 0,
-  defaultRoute: { modelId: "qc69jvmznzxy/glm-5.2", functionId: "glm-fid" },
+  defaultRoute: {
+    modelId: "qc69jvmznzxy/minimax-m3",
+    functionId: "minimax-m3-fid",
+  },
 };
 
 let server: ServerInstance;
@@ -87,7 +90,7 @@ test("GET /v1/models advertises the model", async () => {
   const body = await r.json();
   expect(body).toEqual({
     object: "list",
-    data: [{ id: "z-ai/glm-5.2", object: "model" }],
+    data: [{ id: "minimaxai/minimax-m3", object: "model" }],
   });
 });
 
@@ -321,7 +324,7 @@ test("streaming completion passes translated SSE through and burns one token", a
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "z-ai/glm-5.2",
+      model: "minimaxai/minimax-m3",
       messages: [{ role: "user", content: "say hi" }],
       stream: true,
     }),
@@ -345,7 +348,7 @@ test("streaming completion passes translated SSE through and burns one token", a
   expect(chatCalls).toBe(beforeChats + 1);
   expect(lastParams?.stream).toBe(true);
   expect(lastParams?.token).toBe("P1_fake_token");
-  expect(lastParams?.model).toBe("z-ai/glm-5.2");
+  expect(lastParams?.model).toBe("minimaxai/minimax-m3");
 });
 
 test("non-streaming completion returns an aggregated chat.completion object", async () => {
@@ -353,7 +356,7 @@ test("non-streaming completion returns an aggregated chat.completion object", as
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "z-ai/glm-5.2",
+      model: "minimaxai/minimax-m3",
       messages: [{ role: "user", content: "say hi" }],
       stream: false,
     }),
@@ -554,7 +557,7 @@ test("server reads the catalog from a mutable provider", async () => {
         );
       },
     } as unknown as Upstream,
-    model: "z-ai/glm-5.2",
+    model: "minimaxai/minimax-m3",
     port: 0,
   });
   const catBase = `http://localhost:${catServer.port}`;
@@ -571,8 +574,8 @@ test("server reads the catalog from a mutable provider", async () => {
     });
     expect(r1.status).toBe(200);
     expect(lastParams?.route).toEqual({
-      modelId: "qc69jvmznzxy/glm-5.2",
-      functionId: "glm-fid",
+      modelId: "qc69jvmznzxy/minimax-m3",
+      functionId: "minimax-m3-fid",
     });
 
     // once populated, the same request routes by the catalog entry
