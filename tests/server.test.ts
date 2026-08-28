@@ -373,6 +373,18 @@ test("POST /v1/chat/completions normalizes null content to empty string", async 
   expect(lastParams?.messages[0]?.content).toBe("");
 });
 
+test("stream omitted defaults to a non-streaming JSON completion", async () => {
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  });
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("application/json");
+  const body = await r.json();
+  expect(body.object).toBe("chat.completion");
+});
+
 test("streaming completion passes translated SSE through and burns one token", async () => {
   const beforeTokens = tokenCalls;
   const beforeChats = chatCalls;

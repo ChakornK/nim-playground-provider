@@ -245,7 +245,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       if (m.content == null) m.content = "";
     }
 
-    const stream = body.stream !== false;
+    const stream = body.stream === true;
     const reqModel = body.model ?? model;
 
     const catalog = getCatalog();
