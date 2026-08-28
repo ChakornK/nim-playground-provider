@@ -25,6 +25,17 @@ const CATALOG_REFRESH_MS = 1000 * 60 * 60 * 24;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
 
+let defaultRoute: ModelRoute | undefined;
+const deriveDefaultRoute = (): ModelRoute | undefined => {
+  const entry = catalog.find((m) => m.id === env.model);
+  return entry
+    ? {
+        modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
+        functionId: entry.functionId,
+      }
+    : undefined;
+};
+
 const logCatalogEvent = (e: CatalogEvent) => {
   switch (e.type) {
     case "list-done":
@@ -64,6 +75,7 @@ const refreshCatalog = async () => {
     });
     catalog = result.entries;
     catalogState = "ready";
+    defaultRoute ??= deriveDefaultRoute();
     console.log(`${TAG} catalog ready (${catalog.length} text-capable models)`);
   } catch (e) {
     catalogState = "idle";
@@ -78,15 +90,8 @@ const getCatalog = () => {
 await refreshCatalog();
 setInterval(refreshCatalog, CATALOG_REFRESH_MS).unref();
 
-// Default route from the catalog; fall back to a direct lookup when the
-// catalog build failed so chat can still work.
-const catalogEntry = catalog.find((m) => m.id === env.model);
-const defaultRoute: ModelRoute | undefined = catalogEntry
-  ? {
-      modelId: `${catalogEntry.namespace ?? NAMESPACE}/${catalogEntry.slug}`,
-      functionId: catalogEntry.functionId,
-    }
-  : ((await resolveModelRoute(env.model)) ?? undefined);
+// Falls back to a direct lookup when the catalog build failed.
+defaultRoute ??= (await resolveModelRoute(env.model)) ?? undefined;
 if (defaultRoute) {
   console.log(
     `${TAG} resolved default route for ${env.model} (${defaultRoute.modelId})`,
@@ -105,7 +110,7 @@ const server = await createServer({
   upstream,
   model: env.model,
   getCatalog,
-  defaultRoute,
+  getDefaultRoute: () => defaultRoute,
 });
 
 console.log(

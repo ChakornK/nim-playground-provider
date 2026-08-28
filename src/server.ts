@@ -27,6 +27,8 @@ export interface ServerDeps {
   getCatalog?: () => CatalogEntry[];
   /** Fallback deploy route for the default model, used when the catalog is empty. */
   defaultRoute?: ModelRoute;
+  /** Read per request when set, so a route resolved after startup takes effect. */
+  getDefaultRoute?: () => ModelRoute | undefined;
 }
 
 export interface ServerInstance {
@@ -259,7 +261,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
         }
-      : deps.defaultRoute;
+      : (deps.getDefaultRoute?.() ?? deps.defaultRoute);
     if (!route) {
       return errorJson(
         `no route available for model '${reqModel}'`,
