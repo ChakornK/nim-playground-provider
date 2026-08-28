@@ -35,6 +35,16 @@ const MINT_ATTEMPTS = 3;
 const MINT_TIMEOUT_MS = 60_000;
 const TOKEN_POLL_TIMEOUT_MS = 30_000;
 
+interface HCaptchaWindow extends Window {
+  __hcLoad?: () => void;
+  hcaptcha: {
+    render(id: string, o: object): string;
+    reset(id: string): void;
+    execute(id: string): Promise<unknown>;
+    getResponse(id: string): string;
+  };
+}
+
 export async function withTimeout<T>(
   p: Promise<T>,
   ms: number,
@@ -183,7 +193,7 @@ export class BrowserSession {
 
     // Load hCaptcha api.js, calls __hcLoad() when ready
     await this.page.evaluate((apiUrl) => {
-      const w = window as unknown as Window & { __hcLoad?: () => void };
+      const w = window as unknown as HCaptchaWindow;
       return new Promise<void>((resolve, reject) => {
         w.__hcLoad = resolve;
         const s = document.createElement("script");
@@ -194,9 +204,7 @@ export class BrowserSession {
     }, this.hcaptchaApiUrl);
 
     this.widgetId = await this.page.evaluate((sitekey) => {
-      const w = window as unknown as Window & {
-        hcaptcha: { render: (id: string, o: object) => string };
-      };
+      const w = window as unknown as HCaptchaWindow;
       const div = document.createElement("div");
       div.id = "mint_widget";
       div.style.cssText =
@@ -214,21 +222,14 @@ export class BrowserSession {
     if (!widgetId) throw new Error("no widget");
 
     await page.evaluate((id) => {
-      const w = window as unknown as Window & {
-        hcaptcha: {
-          reset: (id: string) => void;
-          execute: (id: string) => Promise<unknown>;
-        };
-      };
+      const w = window as unknown as HCaptchaWindow;
       w.hcaptcha.reset(id);
       return w.hcaptcha.execute(id);
     }, widgetId);
 
     await page.waitForFunction(
       (id) => {
-        const w = window as unknown as Window & {
-          hcaptcha: { getResponse: (id: string) => string };
-        };
+        const w = window as unknown as HCaptchaWindow;
         const token = w.hcaptcha.getResponse(id);
         return typeof token === "string" && token.startsWith("P1_");
       },
@@ -237,9 +238,7 @@ export class BrowserSession {
     );
 
     const token = await page.evaluate((id) => {
-      const w = window as unknown as Window & {
-        hcaptcha: { getResponse: (id: string) => string };
-      };
+      const w = window as unknown as HCaptchaWindow;
       return w.hcaptcha.getResponse(id);
     }, widgetId);
     if (typeof token !== "string" || !token.startsWith("P1_")) {
