@@ -6,7 +6,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --omit=peer
 COPY src ./src
 COPY tsconfig.json ./
 # Reference official lightpanda/browser image in build stage
-COPY --from=lightpanda/browser /usr/bin/lightpanda /usr/bin/lightpanda
+COPY --from=lightpanda/browser:0.3.7 /usr/bin/lightpanda /usr/bin/lightpanda
 RUN test -x /usr/bin/lightpanda
 
 # Runtime stage: distroless bundles node 26 and CA certificates, and lightpanda
