@@ -166,7 +166,9 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       if (response.body) {
         // DOM and node:stream/web have separate ReadableStream types,
         // at runtime they're the same object.
-        Readable.fromWeb(response.body as never).pipe(res);
+        Readable.fromWeb(
+          response.body as unknown as import("node:stream/web").ReadableStream,
+        ).pipe(res);
       } else {
         res.end();
       }
