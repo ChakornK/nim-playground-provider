@@ -36,10 +36,9 @@ if (defaultRoute) {
 
 // Catalog awaited at startup, failed build re-triggers on /v1/models, then
 // refreshes on an interval.
-const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
+const CATALOG_REFRESH_MS = 1000 * 60 * 60 * 24;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
-let catalogRefreshMs = DEFAULT_REFRESH_MS;
 
 const logCatalogEvent = (e: CatalogEvent) => {
   switch (e.type) {
@@ -81,12 +80,11 @@ const refreshCatalog = async () => {
       onEvent: logCatalogEvent,
     });
     catalog = result.entries;
-    catalogRefreshMs = result.refreshMs;
     catalogState = "ready";
     console.log(
       `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
-    setInterval(refreshCatalog, catalogRefreshMs);
+    setInterval(refreshCatalog, CATALOG_REFRESH_MS);
   } catch (e) {
     catalogState = "idle";
     console.warn(

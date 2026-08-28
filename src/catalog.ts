@@ -96,17 +96,12 @@ async function fetchSpec(
   }
 }
 
-async function fetchEndpoints(
-  fetchImpl: CatalogFetch,
-): Promise<{ json: unknown; refreshMs: number | null }> {
+async function fetchEndpoints(fetchImpl: CatalogFetch): Promise<unknown> {
   const r = await fetchImpl(ENDPOINTS_URL, {
     headers: API_HEADERS,
   });
   if (!r.ok) throw new Error(`endpoints list ${r.status}`);
-  return {
-    json: await r.json(),
-    refreshMs: parseMaxAge(r.headers.get("cache-control")),
-  };
+  return r.json();
 }
 
 /** Resolve a model's deploy route by matching its name against the endpoints
@@ -116,7 +111,7 @@ export async function resolveModelRoute(
   fetchImpl: CatalogFetch = fetch,
 ): Promise<ModelRoute | null> {
   try {
-    const { json } = await fetchEndpoints(fetchImpl);
+    const json = await fetchEndpoints(fetchImpl);
     const artifacts =
       (json as { artifacts?: EndpointArtifact[] }).artifacts ?? [];
     const names = slugCandidates(id);
@@ -133,11 +128,8 @@ export async function resolveModelRoute(
   }
 }
 
-const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
-
 export interface CatalogResult {
   entries: CatalogEntry[];
-  refreshMs: number;
 }
 
 export type CatalogEvent =
@@ -152,12 +144,6 @@ export type CatalogEvent =
       reason?: string;
     }
   | { type: "fetch-end"; total: number; kept: number; dropped: number };
-
-function parseMaxAge(cc: string | null): number | null {
-  if (!cc) return null;
-  const m = cc.match(/max-age=(\d+)/i);
-  return m?.[1] ? parseInt(m[1], 10) * 1000 : null;
-}
 
 async function mapPool<T, R>(
   items: T[],
@@ -190,9 +176,7 @@ export async function buildCatalog(opts?: {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const onEvent = opts?.onEvent;
 
-  const { json, refreshMs: listRefreshMs } = await fetchEndpoints(fetchImpl);
-  const candidates = endpointCandidates(json);
-  const refreshMs = listRefreshMs ?? DEFAULT_REFRESH_MS;
+  const candidates = endpointCandidates(await fetchEndpoints(fetchImpl));
   onEvent?.({ type: "list-done", count: candidates.length });
 
   const total = candidates.length;
@@ -237,5 +221,5 @@ export async function buildCatalog(opts?: {
   const sorted = entries
     .filter((e): e is CatalogEntry => e !== null)
     .sort((a, b) => a.id.localeCompare(b.id));
-  return { entries: sorted, refreshMs };
+  return { entries: sorted };
 }

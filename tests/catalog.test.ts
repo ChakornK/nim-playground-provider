@@ -134,7 +134,6 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
       ownedBy: "z-ai",
     },
   ]);
-  expect(result.refreshMs).toBe(6 * 60 * 60 * 1000);
 });
 
 test("buildCatalog propagates endpoints-list failure", async () => {
