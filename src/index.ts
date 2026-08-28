@@ -4,7 +4,7 @@ import {
   resolveModelRoute,
   type CatalogEvent,
 } from "./catalog.ts";
-import { detectLightpanda, env } from "./constants.ts";
+import { detectLightpanda, env, NAMESPACE } from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
@@ -17,22 +17,6 @@ const pool = new TokenPool(session, env.poolSize, {
     console.log(`nim-playground-provider: token pool ready (${warm} warm)`),
 });
 const upstream = new Upstream();
-
-// Resolve default route first so chat works if catalog build fails.
-console.log(
-  `nim-playground-provider: fetching default route for ${env.model}...`,
-);
-const defaultRoute: ModelRoute | undefined =
-  (await resolveModelRoute(env.model)) ?? undefined;
-if (defaultRoute) {
-  console.log(
-    `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
-  );
-} else {
-  console.warn(
-    `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
-  );
-}
 
 // Catalog awaited at startup, failed build re-triggers on /v1/models, then
 // refreshes on an interval.
@@ -98,6 +82,25 @@ const getCatalog = () => {
 
 await refreshCatalog();
 setInterval(refreshCatalog, CATALOG_REFRESH_MS).unref();
+
+// Default route from the catalog; fall back to a direct lookup when the
+// catalog build failed so chat can still work.
+const catalogEntry = catalog.find((m) => m.id === env.model);
+const defaultRoute: ModelRoute | undefined = catalogEntry
+  ? {
+      modelId: `${catalogEntry.namespace ?? NAMESPACE}/${catalogEntry.slug}`,
+      functionId: catalogEntry.functionId,
+    }
+  : ((await resolveModelRoute(env.model)) ?? undefined);
+if (defaultRoute) {
+  console.log(
+    `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
+  );
+} else {
+  console.warn(
+    `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
+  );
+}
 
 console.log(
   `nim-playground-provider: warming token pool (size=${env.poolSize})`,
