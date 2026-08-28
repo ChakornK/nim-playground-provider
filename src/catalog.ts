@@ -3,6 +3,8 @@ import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
+// ponytail: first page only; the free-chat list fits in 1000 entries today.
+// Follow the next-page cursor if models ever silently vanish from /v1/models.
 export const ENDPOINTS_URL =
   "https://api.ngc.nvidia.com/v2/endpoints?page-size=1000";
 const ENDPOINTS_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
