@@ -12,7 +12,7 @@
     "lint": "biome lint --write .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "biome check --write . && tsc --noEmit && vitest run"
+    "check": "biome check . && tsc --noEmit && vitest run"
   },
   "dependencies": {
     "playwright-core": "^1.62.1"
