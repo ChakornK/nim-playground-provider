@@ -45,5 +45,5 @@ export async function* transformStream(
   // stream ended without [DONE], emit anything held with usage intact,
   // then terminate so strict clients see the sentinel
   yield* flush(true);
-  yield "data: [DONE]\n\n";
+  if (!signal?.aborted) yield "data: [DONE]\n\n";
 }
