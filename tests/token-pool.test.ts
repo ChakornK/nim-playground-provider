@@ -110,6 +110,24 @@ test("a single mint failure retries before rejecting waiters", async () => {
   expect(attempts).toBeGreaterThanOrEqual(3);
 });
 
+test("pool heals after a mint failure without a new acquire", async () => {
+  let attempts = 0;
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      if (attempts <= 3) throw new Error("captcha down");
+      return `P1_healed_${attempts}`;
+    },
+  };
+  const pool = new TokenPool(src, 1, { maxRetries: 2 });
+
+  await expect(pool.acquire()).rejects.toThrow("captcha down");
+  // rearm fires ~1s later and refills without another acquire
+  await new Promise((r) => setTimeout(r, 1200));
+  const token = await pool.acquire();
+  expect(token).toBe("P1_healed_4");
+});
+
 test("persistent mint failure rejects all waiters after retries exhausted", async () => {
   let attempts = 0;
   const src: TokenSource = {
