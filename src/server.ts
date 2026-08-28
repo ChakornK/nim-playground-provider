@@ -251,11 +251,11 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     const reqModel = body.model ?? model;
 
     const catalog = getCatalog();
-    if (catalog.length > 0 && !lookup(reqModel)) {
+    const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+    if (catalog.length > 0 && !entry) {
       return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
     }
 
-    const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
     const route = entry
       ? {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
