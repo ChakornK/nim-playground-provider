@@ -85,7 +85,7 @@ const refreshCatalog = async () => {
     });
     catalog = result.entries;
     catalogState = "ready";
-    defaultRoute ??= deriveDefaultRoute();
+    defaultRoute = deriveDefaultRoute() ?? defaultRoute;
     console.log(`${TAG} catalog ready (${catalog.length} text-capable models)`);
   } catch (e) {
     catalogState = "idle";
