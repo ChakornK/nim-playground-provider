@@ -264,23 +264,25 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
 
     const stream = body.stream === true;
     const reqModel = body.model ?? model;
-
     const catalog = getCatalog();
     const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
-    if (catalog.length > 0 && !entry) {
-      return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
+    // The default model stays routable via its fallback route; other unknown
+    // models are rejected.
+    if (!entry && reqModel !== model) {
+      return errorJson(
+        `model '${reqModel}' not found`,
+        404,
+        "invalid_request_error",
+        "model_not_found",
+      );
     }
-    // Without a catalog only the default model can be routed.
-    if (catalog.length === 0 && reqModel !== model) {
-      return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
-    }
-
+    const fallbackRoute = deps.getDefaultRoute?.() ?? deps.defaultRoute;
     const route = entry
       ? {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
         }
-      : (deps.getDefaultRoute?.() ?? deps.defaultRoute);
+      : fallbackRoute;
     if (!route) {
       return errorJson(
         `no route available for model '${reqModel}'`,
