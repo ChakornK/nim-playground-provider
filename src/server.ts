@@ -350,17 +350,17 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       return json(completion, 200);
     }
 
+    const upstreamAbort = new AbortController();
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
-        // Cancels the upstream body when no frame arrives for a while.
-        const idle = setTimeout(
-          () => void up.body?.cancel().catch(() => {}),
-          STREAM_IDLE_MS,
-        );
+        // Aborts the upstream body when no frame arrives for a while.
+        const idle = setTimeout(() => upstreamAbort.abort(), STREAM_IDLE_MS);
+        idle.unref();
         try {
           for await (const frame of transformStream(
             up.body as ReadableStream<Uint8Array>,
+            upstreamAbort.signal,
           )) {
             idle.refresh();
             controller.enqueue(enc.encode(frame));
@@ -373,6 +373,10 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             controller.close();
           } catch {}
         }
+      },
+      // Client disconnect lands here; tears down the upstream fetch.
+      cancel() {
+        upstreamAbort.abort();
       },
     });
     return new Response(streamOut, { status: 200, headers: SSE_HEADERS });

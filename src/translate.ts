@@ -6,6 +6,7 @@ import type { OpenAIChunk } from "./types.ts";
  * (lookahead), emit it stripped, keep usage only on the last frame before [DONE]. */
 export async function* transformStream(
   upstreamBody: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   let held: OpenAIChunk | null = null;
 
@@ -17,7 +18,7 @@ export async function* transformStream(
     yield `data: ${JSON.stringify(chunk)}\n\n`;
   };
 
-  for await (const payload of parseSSE(upstreamBody)) {
+  for await (const payload of parseSSE(upstreamBody, signal)) {
     if (payload === "[DONE]") {
       yield* flush(true);
       yield "data: [DONE]\n\n";
