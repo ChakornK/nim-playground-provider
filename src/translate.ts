@@ -42,6 +42,8 @@ export async function* transformStream(
     yield* flush(false);
     held = chunk;
   }
-  // stream ended without [DONE], emit anything held with usage intact
+  // stream ended without [DONE], emit anything held with usage intact,
+  // then terminate so strict clients see the sentinel
   yield* flush(true);
+  yield "data: [DONE]\n\n";
 }

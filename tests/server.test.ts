@@ -579,7 +579,8 @@ describe("with a catalog", () => {
     });
     expect(r.status).toBe(404);
     const body = await r.json();
-    expect(body.error.type).toBe("model_not_found");
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.code).toBe("model_not_found");
   });
 
   test("routing uses the catalog model's slug and function id", async () => {
