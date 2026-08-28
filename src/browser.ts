@@ -137,7 +137,7 @@ export class BrowserSession {
       });
     });
 
-    this.proc = spawn(
+    const proc = spawn(
       exe,
       [
         "serve",
@@ -150,68 +150,85 @@ export class BrowserSession {
       ],
       { stdio: "ignore" },
     );
+    // The CDP-ready poll turns a spawn failure into a catchable timeout.
+    proc.on("error", () => {});
 
-    const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
-    let cdpVersion: string | null = null;
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
-        if (r.ok) {
-          const v = (await r.json()) as { Browser?: string };
-          cdpVersion = v.Browser ?? null;
-          break;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    if (!cdpVersion) throw new Error("lightpanda CDP endpoint not ready");
+    // Any failure below leaves no half-initialized state behind; the next
+    // attempt starts from scratch.
+    try {
+      const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
+      let cdpVersion: string | null = null;
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+          if (r.ok) {
+            const v = (await r.json()) as { Browser?: string };
+            cdpVersion = v.Browser ?? null;
+            break;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (!cdpVersion) throw new Error("lightpanda CDP endpoint not ready");
 
-    this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    this.context = await this.browser.newContext({
-      userAgent: userAgentFromVersion(cdpVersion),
-    });
-    this.page = await this.context.newPage();
-    await this.page.goto(blankOrigin(), {
-      waitUntil: "domcontentloaded",
-      timeout: MINT_TIMEOUT_MS,
-    });
-
-    const scraped = await this.page.evaluate(() => {
-      const keyEl = document.querySelector("[data-sitekey]");
-      const scriptEl = document.querySelector<HTMLScriptElement>(
-        "script[src*='hcaptcha']",
+      const browser = await chromium.connectOverCDP(
+        `http://127.0.0.1:${cdpPort}`,
       );
-      return {
-        sitekey: keyEl?.getAttribute("data-sitekey") ?? null,
-        apiUrl: scriptEl?.src ?? null,
-      };
-    });
-    if (scraped.sitekey) this.sitekey = scraped.sitekey;
-    if (scraped.apiUrl) {
-      this.hcaptchaApiUrl = appendOnloadParam(scraped.apiUrl);
-    }
-
-    // Load hCaptcha api.js, calls __hcLoad() when ready
-    await this.page.evaluate((apiUrl) => {
-      const w = window as unknown as HCaptchaWindow;
-      return new Promise<void>((resolve, reject) => {
-        w.__hcLoad = resolve;
-        const s = document.createElement("script");
-        s.src = apiUrl;
-        s.onerror = () => reject(new Error("hcaptcha api.js load failed"));
-        document.head.appendChild(s);
+      const context = await browser.newContext({
+        userAgent: userAgentFromVersion(cdpVersion),
       });
-    }, this.hcaptchaApiUrl);
+      const page = await context.newPage();
+      await page.goto(blankOrigin(), {
+        waitUntil: "domcontentloaded",
+        timeout: MINT_TIMEOUT_MS,
+      });
 
-    this.widgetId = await this.page.evaluate((sitekey) => {
-      const w = window as unknown as HCaptchaWindow;
-      const div = document.createElement("div");
-      div.id = "mint_widget";
-      div.style.cssText =
-        "position:fixed;left:-9999px;top:0;width:300px;height:80px";
-      document.body.appendChild(div);
-      return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
-    }, this.sitekey);
+      const scraped = await page.evaluate(() => {
+        const keyEl = document.querySelector("[data-sitekey]");
+        const scriptEl = document.querySelector<HTMLScriptElement>(
+          "script[src*='hcaptcha']",
+        );
+        return {
+          sitekey: keyEl?.getAttribute("data-sitekey") ?? null,
+          apiUrl: scriptEl?.src ?? null,
+        };
+      });
+      if (scraped.sitekey) this.sitekey = scraped.sitekey;
+      if (scraped.apiUrl) {
+        this.hcaptchaApiUrl = appendOnloadParam(scraped.apiUrl);
+      }
+
+      // Load hCaptcha api.js, calls __hcLoad() when ready
+      await page.evaluate((apiUrl) => {
+        const w = window as unknown as HCaptchaWindow;
+        return new Promise<void>((resolve, reject) => {
+          w.__hcLoad = resolve;
+          const s = document.createElement("script");
+          s.src = apiUrl;
+          s.onerror = () => reject(new Error("hcaptcha api.js load failed"));
+          document.head.appendChild(s);
+        });
+      }, this.hcaptchaApiUrl);
+
+      const widgetId = await page.evaluate((sitekey) => {
+        const w = window as unknown as HCaptchaWindow;
+        const div = document.createElement("div");
+        div.id = "mint_widget";
+        div.style.cssText =
+          "position:fixed;left:-9999px;top:0;width:300px;height:80px";
+        document.body.appendChild(div);
+        return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
+      }, this.sitekey);
+
+      this.proc = proc;
+      this.browser = browser;
+      this.context = context;
+      this.page = page;
+      this.widgetId = widgetId;
+    } catch (e) {
+      proc.kill();
+      throw e;
+    }
   }
 
   private async mintTokenInner(): Promise<string> {

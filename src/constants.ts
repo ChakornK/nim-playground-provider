@@ -20,7 +20,12 @@ const lightpandaExe =
 
 export function detectLightpanda(): string {
   const override = process.env.LIGHTPANDA_PATH;
-  if (override) return override;
+  if (override) {
+    if (!existsSync(override)) {
+      throw new Error(`LIGHTPANDA_PATH does not exist: ${override}`);
+    }
+    return override;
+  }
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     const candidate = join(dir, lightpandaExe);
