@@ -10,11 +10,13 @@ import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 import { Upstream } from "./upstream.ts";
 
+const TAG = "nim-playground-provider:";
+
 const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize, {
   onWarm: (warm) =>
-    console.log(`nim-playground-provider: token pool ready (${warm} warm)`),
+    console.log(`${TAG} token pool ready (${warm} warm)`),
 });
 const upstream = new Upstream();
 
@@ -28,28 +30,28 @@ const logCatalogEvent = (e: CatalogEvent) => {
   switch (e.type) {
     case "list-done":
       console.log(
-        `nim-playground-provider: discovered ${e.count} free chat models from endpoints list`,
+        `${TAG} discovered ${e.count} free chat models from endpoints list`,
       );
       return;
     case "fetch-start":
       console.log(
-        `nim-playground-provider: fetching ${e.count} model specs (concurrency=${e.concurrency})...`,
+        `${TAG} fetching ${e.count} model specs (concurrency=${e.concurrency})...`,
       );
       return;
     case "model":
       if (e.outcome === "kept") {
         console.log(
-          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id})`,
+          `${TAG} fetched ${e.fetched}/${e.total} models (${e.id})`,
         );
       } else {
         console.log(
-          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
+          `${TAG} fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
         );
       }
       return;
     case "fetch-end":
       console.log(
-        `nim-playground-provider: fetched ${e.total}/${e.total} models (${e.kept} kept, ${e.dropped} dropped)`,
+        `${TAG} fetched ${e.total}/${e.total} models (${e.kept} kept, ${e.dropped} dropped)`,
       );
       return;
   }
@@ -66,12 +68,12 @@ const refreshCatalog = async () => {
     catalog = result.entries;
     catalogState = "ready";
     console.log(
-      `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
+      `${TAG} catalog ready (${catalog.length} text-capable models)`,
     );
   } catch (e) {
     catalogState = "idle";
     console.warn(
-      `nim-playground-provider: catalog refresh failed (${(e as Error).message})`,
+      `${TAG} catalog refresh failed (${(e as Error).message})`,
     );
   }
 };
@@ -94,16 +96,16 @@ const defaultRoute: ModelRoute | undefined = catalogEntry
   : ((await resolveModelRoute(env.model)) ?? undefined);
 if (defaultRoute) {
   console.log(
-    `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
+    `${TAG} resolved default route for ${env.model} (${defaultRoute.modelId})`,
   );
 } else {
   console.warn(
-    `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
+    `${TAG} could not resolve a route for ${env.model}; chat requests will fail`,
   );
 }
 
 console.log(
-  `nim-playground-provider: warming token pool (size=${env.poolSize})`,
+  `${TAG} warming token pool (size=${env.poolSize})`,
 );
 pool.prewarm();
 
@@ -116,7 +118,7 @@ const server = await createServer({
 });
 
 console.log(
-  `nim-playground-provider: listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
+  `${TAG} listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
 );
 
 const stop = async () => {
