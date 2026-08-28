@@ -25,7 +25,7 @@ ENV PORT=8787
 ENV HOST=0.0.0.0
 ENV POOL_SIZE=2
 ENV LIGHTPANDA_PATH=/usr/bin/lightpanda
-ENV MODEL=minimaxai/minimax-m3
+ENV MODEL=moonshotai/kimi-k3
 
 EXPOSE 8787
 

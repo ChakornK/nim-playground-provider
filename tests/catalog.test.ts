@@ -83,7 +83,7 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
               publisher: "z-ai",
               createdDate: "2026-07-03T20:32:17.807Z",
             }),
-            artifact({ name: "minimax-m3", publisher: "minimaxai" }),
+            artifact({ name: "kimi-k3", publisher: "moonshotai" }),
             artifact({ name: "undeployed", publisher: "nvidia" }),
             artifact({ name: "missing", publisher: "nvidia" }),
           ],
@@ -99,7 +99,7 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
         }),
         { status: 200 },
       );
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/minimax-m3/spec`)
+    if (u === `${SPEC_BASE}/qc69jvmznzxy/kimi-k3/spec`)
       return new Response(
         JSON.stringify({
           namespace: "qc69jvmznzxy",
@@ -118,12 +118,12 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
   const result = await buildCatalog({ fetchImpl, concurrency: 2 });
   expect(result.entries).toEqual([
     {
-      id: "minimaxai/minimax-m3",
-      slug: "minimax-m3",
+      id: "moonshotai/kimi-k3",
+      slug: "kimi-k3",
       namespace: "qc69jvmznzxy",
       functionId: "mm-fn",
       created: 0,
-      ownedBy: "minimaxai",
+      ownedBy: "moonshotai",
     },
     {
       id: "z-ai/glm-5.2",

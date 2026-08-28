@@ -6,7 +6,7 @@ export interface OpenAIMessage {
 }
 
 export interface CatalogEntry {
-  /** OpenAI-compatible model, the body model, e.g. minimaxai/minimax-m3. */
+  /** OpenAI-compatible model, the body model, e.g. moonshotai/kimi-k3. */
   id: string;
   /** Predict path segment, e.g. minimax-m3 or llama-3_1-8b-instruct. */
   slug: string;
