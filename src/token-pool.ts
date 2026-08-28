@@ -77,6 +77,9 @@ export class TokenPool {
     this.refilling = true;
     void this.refill().finally(() => {
       this.refilling = false;
+      // Waiters added while a refill was failing (e.g. retrying from a
+      // rejection handler) need a fresh refill; theirs was skipped above.
+      if (this.waiting.length > 0) this.scheduleRefill();
     });
   }
 

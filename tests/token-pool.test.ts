@@ -140,6 +140,20 @@ test("pool heals on the next acquire after a mint failure", async () => {
   expect(token).toBe("P1_healed_2");
 });
 
+test("a waiter re-acquiring from a rejection handler is served", async () => {
+  let attempts = 0;
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      if (attempts === 1) throw new Error("down");
+      return "P1_ok";
+    },
+  };
+  const pool = new TokenPool(src, 1, { acquireTimeoutMs: 1000 });
+  const result = await pool.acquire().catch(() => pool.acquire());
+  expect(result).toBe("P1_ok");
+});
+
 test("persistent mint failure rejects all waiters after retries exhausted", async () => {
   let attempts = 0;
   const src: TokenSource = {
