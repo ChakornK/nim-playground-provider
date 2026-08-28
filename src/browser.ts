@@ -79,23 +79,26 @@ export class BrowserSession {
     this.opts = opts;
   }
 
-  /** Mint one fresh single-use hCaptcha token. Serialized, never reused. */
+  /** Mint one fresh single-use hCaptcha token. Chained so concurrent callers
+   * never overlap on the shared widget. */
   async mintToken(): Promise<string> {
-    if (this.minting) await this.minting.catch(() => {});
-    this.minting = withTimeout(
-      this.mintWithRetry(),
-      MINT_TIMEOUT_MS,
-      "hcaptcha mint timed out",
-    ).catch(async (e) => {
-      // Persistent failure, close browser so next mint starts clean
-      await this.close();
-      throw e;
-    });
-    try {
-      return await this.minting;
-    } finally {
-      this.minting = null;
-    }
+    const prev: Promise<unknown> = this.minting ?? Promise.resolve();
+    const minting = prev
+      .catch(() => {})
+      .then(() =>
+        withTimeout(
+          this.mintWithRetry(),
+          MINT_TIMEOUT_MS,
+          "hcaptcha mint timed out",
+        ),
+      )
+      .catch(async (e) => {
+        // Persistent failure, close browser so next mint starts clean
+        await this.close();
+        throw e;
+      });
+    this.minting = minting;
+    return minting;
   }
 
   async close(): Promise<void> {
