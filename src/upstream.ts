@@ -5,6 +5,10 @@ export function upstreamUrl(modelId: string): string {
   return `${UPSTREAM_BASE}/models/${modelId}`;
 }
 
+const DEFAULT_TEMPERATURE = 1;
+const DEFAULT_TOP_P = 1;
+const DEFAULT_MAX_TOKENS = 16384;
+
 export function buildUpstreamBody(params: {
   model: string;
   messages: OpenAIMessage[];
@@ -40,9 +44,13 @@ export function buildUpstreamBody(params: {
       clear_thinking: false,
     },
     model: params.model,
-    ...(allowed("temperature") ? { temperature: params.temperature ?? 1 } : {}),
-    ...(allowed("top_p") ? { top_p: params.topP ?? 1 } : {}),
-    ...(allowed("max_tokens") ? { max_tokens: params.maxTokens ?? 16384 } : {}),
+    ...(allowed("temperature")
+      ? { temperature: params.temperature ?? DEFAULT_TEMPERATURE }
+      : {}),
+    ...(allowed("top_p") ? { top_p: params.topP ?? DEFAULT_TOP_P } : {}),
+    ...(allowed("max_tokens")
+      ? { max_tokens: params.maxTokens ?? DEFAULT_MAX_TOKENS }
+      : {}),
     messages: params.messages,
     ...(params.tools?.length ? { tools: params.tools } : {}),
     ...(params.stream
