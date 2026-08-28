@@ -5,9 +5,9 @@ import { parseKeys } from "../src/constants.ts";
 import {
   createServer,
   isAuthorized,
-  safeEqual,
   type ServerDeps,
   type ServerInstance,
+  safeEqual,
 } from "../src/server.ts";
 import type { TokenPool } from "../src/token-pool.ts";
 import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";

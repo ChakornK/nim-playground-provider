@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 import {
   buildCatalog,
-  endpointCandidates,
   ENDPOINTS_URL,
+  endpointCandidates,
   resolveModelRoute,
   slugCandidates,
   specParams,

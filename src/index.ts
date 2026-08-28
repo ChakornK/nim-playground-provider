@@ -1,8 +1,8 @@
 import { BrowserSession } from "./browser.ts";
 import {
   buildCatalog,
-  resolveModelRoute,
   type CatalogEvent,
+  resolveModelRoute,
 } from "./catalog.ts";
 import { detectLightpanda, env, NAMESPACE } from "./constants.ts";
 import { createServer } from "./server.ts";
@@ -15,8 +15,7 @@ const TAG = "nim-playground-provider:";
 const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize, {
-  onWarm: (warm) =>
-    console.log(`${TAG} token pool ready (${warm} warm)`),
+  onWarm: (warm) => console.log(`${TAG} token pool ready (${warm} warm)`),
 });
 const upstream = new Upstream();
 
@@ -40,9 +39,7 @@ const logCatalogEvent = (e: CatalogEvent) => {
       return;
     case "model":
       if (e.outcome === "kept") {
-        console.log(
-          `${TAG} fetched ${e.fetched}/${e.total} models (${e.id})`,
-        );
+        console.log(`${TAG} fetched ${e.fetched}/${e.total} models (${e.id})`);
       } else {
         console.log(
           `${TAG} fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
@@ -67,14 +64,10 @@ const refreshCatalog = async () => {
     });
     catalog = result.entries;
     catalogState = "ready";
-    console.log(
-      `${TAG} catalog ready (${catalog.length} text-capable models)`,
-    );
+    console.log(`${TAG} catalog ready (${catalog.length} text-capable models)`);
   } catch (e) {
     catalogState = "idle";
-    console.warn(
-      `${TAG} catalog refresh failed (${(e as Error).message})`,
-    );
+    console.warn(`${TAG} catalog refresh failed (${(e as Error).message})`);
   }
 };
 const getCatalog = () => {
@@ -104,9 +97,7 @@ if (defaultRoute) {
   );
 }
 
-console.log(
-  `${TAG} warming token pool (size=${env.poolSize})`,
-);
+console.log(`${TAG} warming token pool (size=${env.poolSize})`);
 pool.prewarm();
 
 const server = await createServer({

@@ -1,9 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
+import { type ChildProcess, spawn } from "node:child_process";
+import { type AddressInfo, createServer } from "node:net";
 import {
-  chromium,
   type Browser,
   type BrowserContext,
+  chromium,
   type Page,
 } from "playwright-core";
 import { env, USER_AGENT } from "./constants.ts";
