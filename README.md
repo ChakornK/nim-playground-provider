@@ -47,14 +47,14 @@ Add a key with `API_KEY=secret1 npm start` or by creating a `.env` file.
 
 All settings use environment variables. None are required.
 
-| Variable          | Default                | Purpose                                                   |
-| ----------------- | ---------------------- | --------------------------------------------------------- |
-| `PORT`            | `8787`                 | Listen port                                               |
-| `HOST`            | `127.0.0.1`            | Bind address (localhost by default)                       |
-| `POOL_SIZE`       | `2`                    | Pre-minted hCaptcha tokens to keep warm                   |
-| `LIGHTPANDA_PATH` | (auto-detected)        | Path to the Lightpanda binary, overrides PATH detection   |
+| Variable          | Default              | Purpose                                                   |
+| ----------------- | -------------------- | --------------------------------------------------------- |
+| `PORT`            | `8787`               | Listen port                                               |
+| `HOST`            | `127.0.0.1`          | Bind address (localhost by default)                       |
+| `POOL_SIZE`       | `2`                  | Pre-minted hCaptcha tokens to keep warm                   |
+| `LIGHTPANDA_PATH` | (auto-detected)      | Path to the Lightpanda binary, overrides PATH detection   |
 | `MODEL`           | `moonshotai/kimi-k3` | Fallback model name                                       |
-| `API_KEY`         | (unset)                | Comma-separated bearer keys; empty or unset disables auth |
+| `API_KEY`         | (unset)              | Comma-separated bearer keys; empty or unset disables auth |
 
 ## Authentication
 
@@ -72,6 +72,8 @@ curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completion
 ### `POST /v1/chat/completions`
 
 Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. `enable_thinking` (default `true`) toggles reasoning mode. The proxy doesn't support `reasoning.effort`.
+
+Each model accepts a different subset of sampling params, read from its published spec. If you send a param the model rejects (e.g. `top_p` to Kimi K3), the proxy drops it and logs a warning instead of failing the request.
 
 ### `GET /v1/models`
 
