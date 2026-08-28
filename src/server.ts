@@ -148,13 +148,19 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       }
       const chunks: Buffer[] = [];
       let size = 0;
-      for await (const chunk of req) {
-        size += (chunk as Buffer).length;
-        if (size > MAX_BODY_BYTES) {
-          rejectOversized(req, res);
-          return;
+      try {
+        for await (const chunk of req) {
+          size += (chunk as Buffer).length;
+          if (size > MAX_BODY_BYTES) {
+            rejectOversized(req, res);
+            return;
+          }
+          chunks.push(Buffer.from(chunk));
         }
-        chunks.push(Buffer.from(chunk));
+      } catch {
+        // Client aborted mid-upload; nothing useful left to send.
+        res.destroy();
+        return;
       }
       body = Buffer.concat(chunks).toString();
     }
