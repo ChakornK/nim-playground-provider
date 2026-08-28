@@ -204,8 +204,6 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
 
-  const lookup = (id: string) => getCatalog().find((m) => m.id === id);
-
   const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") return new Response(null, { status: 204 });
@@ -265,7 +263,8 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     const stream = body.stream === true;
     const reqModel = body.model ?? model;
     const catalog = getCatalog();
-    const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+    const entry =
+      catalog.length > 0 ? catalog.find((m) => m.id === reqModel) : undefined;
     // The default model stays routable via its fallback route; other unknown
     // models are rejected.
     if (!entry && reqModel !== model) {

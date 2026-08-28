@@ -124,7 +124,7 @@ const server = await createServer({
 });
 
 console.log(
-  `${TAG} listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
+  `${TAG} listening on ${server.url} (pool=${env.poolSize}, default=${env.model})`,
 );
 
 const stop = async () => {
