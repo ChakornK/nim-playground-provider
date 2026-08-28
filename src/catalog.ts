@@ -1,15 +1,17 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
-import { chromium, type Browser } from "playwright-core";
 import { USER_AGENT } from "./constants.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
-export const INTEGRATE_MODELS_URL =
-  "https://integrate.api.nvidia.com/v1/models";
-export const GALLERY_URL = "https://build.nvidia.com/models?pageSize=1024";
-const PAGE_ORIGIN = "https://build.nvidia.com";
+export const ENDPOINTS_URL =
+  "https://api.ngc.nvidia.com/v2/endpoints?page-size=1000";
+const ENDPOINTS_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
+
+// undici corrupts zstd bodies, so only offer gzip/br.
+const API_HEADERS = {
+  "user-agent": USER_AGENT,
+  "accept-encoding": "gzip, br",
+};
 
 type CatalogFetch = (
   url: string | URL,
@@ -20,97 +22,115 @@ type CatalogFetch = (
   },
 ) => Promise<Response>;
 
-interface PageData {
-  namespace: string;
-  functionId: string;
-  inputModalities: string[];
-  outputModalities: string[];
+interface EndpointArtifact {
+  name: string;
+  orgName: string;
+  publisher?: string;
+  labels?: string[];
+  createdDate?: string;
 }
 
-// Page embeds a JSON deployment blob (backslash-escaped) inside a larger JSON.
-const NS_RE = /\\"namespace\\":\\"([^"\\]+)\\"/;
-const NVCF_RE = /\\"nvcfFunctionId\\":\\"([^"\\]+)\\"/;
-const INPUT_RE = /\\"inputModalities\\":\[(.*?)\]/;
-const OUTPUT_RE = /\\"outputModalities\\":\[(.*?)\]/;
-const TOKEN_RE = /\\"([A-Za-z]+)\\"/g;
-
-const PAGE_HEADERS = { "user-agent": USER_AGENT };
-
-function pageUrl(id: string, slug: string): string {
-  const org = id.split("/")[0] ?? id;
-  return `${PAGE_ORIGIN}/${org}/${slug}`;
+interface EndpointSpec {
+  namespace?: string;
+  nvcfFunctionId?: string;
 }
 
-function parseEscapedArray(slice: string | undefined): string[] {
-  if (!slice) return [];
-  return Array.from(slice.matchAll(TOKEN_RE), (m) => m[1] ?? "").filter(
-    Boolean,
-  );
+export interface EndpointCandidate {
+  /** Public model id {publisher}/{name}. */
+  id: string;
+  /** Epoch seconds from the artifact createdDate ISO field. */
+  created: number;
+  ownedBy: string;
+  orgName: string;
+  name: string;
 }
 
-function parsePage(html: string): PageData | null {
-  const namespace = html.match(NS_RE)?.[1];
-  const functionId = html.match(NVCF_RE)?.[1];
-  // NVIDIA marks undeployed models with nvcfFunctionId="None", not servable
-  if (!namespace || !functionId || functionId === "None") return null;
-  return {
-    namespace,
-    functionId,
-    inputModalities: parseEscapedArray(html.match(INPUT_RE)?.[1]),
-    outputModalities: parseEscapedArray(html.match(OUTPUT_RE)?.[1]),
-  };
+/** Filter the endpoints list to free chat models. */
+export function endpointCandidates(json: unknown): EndpointCandidate[] {
+  const artifacts = (json as { artifacts?: EndpointArtifact[] }).artifacts;
+  if (!Array.isArray(artifacts)) return [];
+  const seen = new Map<string, EndpointCandidate>();
+  for (const a of artifacts) {
+    if (!a?.name || !a.orgName || !a.publisher) continue;
+    const labels = (a.labels ?? []).map((l) => l.toLowerCase());
+    if (!labels.includes("chat") || !labels.includes("free endpoint")) continue;
+    const id = `${a.publisher}/${a.name}`;
+    if (seen.has(id)) continue;
+    const ms = a.createdDate ? Date.parse(a.createdDate) : NaN;
+    seen.set(id, {
+      id,
+      created: Number.isNaN(ms) ? 0 : Math.floor(ms / 1000),
+      ownedBy: a.publisher,
+      orgName: a.orgName,
+      name: a.name,
+    });
+  }
+  return [...seen.values()];
 }
 
-/** Predict-path candidates for an OpenAI id, bare name then dots→underscores. */
+/** Name candidates for an OpenAI id, bare name then dots→underscores. */
 export function slugCandidates(id: string): string[] {
   const name = id.split("/", 2)[1] ?? id;
   const underscored = name.replaceAll(".", "_");
   return name === underscored ? [name] : [name, underscored];
 }
 
-async function fetchModelPage(
-  id: string,
-  slug: string,
+/** Fetch an endpoint's deploy route. Null when the endpoint is undeployed
+ * (404 or no nvcfFunctionId). */
+async function fetchSpec(
+  orgName: string,
+  name: string,
   fetchImpl: CatalogFetch,
-): Promise<PageData | null> {
+): Promise<{ namespace: string; functionId: string } | null> {
   try {
-    // redirect=error skips stale ids that 308-rename, else we'd mis-attribute
-    // the renamed route to the old id.
-    const r = await fetchImpl(pageUrl(id, slug), {
-      headers: PAGE_HEADERS,
-      redirect: "error",
+    const r = await fetchImpl(`${ENDPOINTS_BASE}/${orgName}/${name}/spec`, {
+      headers: API_HEADERS,
       signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) return null;
-    return parsePage(await r.text());
+    const spec = (await r.json()) as EndpointSpec;
+    if (!spec.namespace || !spec.nvcfFunctionId) return null;
+    return { namespace: spec.namespace, functionId: spec.nvcfFunctionId };
   } catch {
     return null;
   }
 }
 
-function isTextInTextOut(page: PageData): boolean {
-  return (
-    page.inputModalities.includes("Text") &&
-    page.outputModalities.includes("Text")
-  );
+async function fetchEndpoints(
+  fetchImpl: CatalogFetch,
+): Promise<{ json: unknown; refreshMs: number | null }> {
+  const r = await fetchImpl(ENDPOINTS_URL, {
+    headers: API_HEADERS,
+  });
+  if (!r.ok) throw new Error(`endpoints list ${r.status}`);
+  return {
+    json: await r.json(),
+    refreshMs: parseMaxAge(r.headers.get("cache-control")),
+  };
 }
 
-/** Resolve a model's deploy route from its build.nvidia.com page.
- * modelId = {namespace}/{winning slug}, functionId = page nvcfFunctionId,
- * null when no candidate slug is a real page. */
+/** Resolve a model's deploy route by matching its name against the endpoints
+ * list, then reading the spec. modelId = {namespace}/{endpoint name}. */
 export async function resolveModelRoute(
   id: string,
   fetchImpl: CatalogFetch = fetch,
 ): Promise<ModelRoute | null> {
-  for (const slug of slugCandidates(id)) {
-    const page = await fetchModelPage(id, slug, fetchImpl);
-    if (page)
-      return {
-        modelId: `${page.namespace}/${slug}`,
-        functionId: page.functionId,
-      };
+  try {
+    const { json } = await fetchEndpoints(fetchImpl);
+    const artifacts =
+      (json as { artifacts?: EndpointArtifact[] }).artifacts ?? [];
+    const names = slugCandidates(id);
+    const artifact = artifacts.find((a) => a?.name && names.includes(a.name));
+    if (!artifact) return null;
+    const spec = await fetchSpec(artifact.orgName, artifact.name, fetchImpl);
+    if (!spec) return null;
+    return {
+      modelId: `${spec.namespace}/${artifact.name}`,
+      functionId: spec.functionId,
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
 const DEFAULT_REFRESH_MS = 6 * 60 * 60 * 1000;
@@ -121,10 +141,7 @@ export interface CatalogResult {
 }
 
 export type CatalogEvent =
-  | { type: "gallery-start" }
-  | { type: "gallery-done"; count: number }
-  | { type: "fallback"; reason: string }
-  | { type: "integrate-done"; count: number }
+  | { type: "list-done"; count: number }
   | { type: "fetch-start"; count: number; concurrency: number }
   | {
       type: "model";
@@ -163,203 +180,20 @@ async function mapPool<T, R>(
   return out;
 }
 
-// /models?pageSize=1024 is behind a WAF plain fetch can't solve, lightpanda
-// solves it over CDP. DOM embeds each model card as escaped JSON (RSC payload)
-// with labels (chat, Free Endpoint), pre-filtering before the per-page fetch.
-
-export interface GalleryCandidate {
-  /** Public model id {publisher}/{slug}, same shape as integrate ids. */
-  id: string;
-  /** Epoch seconds from the gallery dateCreated ISO field. */
-  created: number;
-  /** Gallery publisher label, the id's org prefix. */
-  ownedBy: string;
-}
-
-// Needles match the escaped key-value shape inside the RSC string.
-const FREE_NEEDLE = '\\"Free Endpoint\\"';
-const CHAT_NEEDLE = '\\"playgroundType\\",\\"values\\":[\\"chat\\"';
-const DEPREC_RE =
-  /\\"key\\":\\"DEPRECATION\\",\\"value\\":\\"(\d{2})\/(\d{2})\/(\d{4})\\"/;
-
-function galleryLabelValue(blob: string, key: string): string {
-  const needle = `\\"key\\":\\"${key}\\",\\"values\\":[\\"`;
-  const i = blob.indexOf(needle);
-  if (i < 0) return "";
-  const start = i + needle.length;
-  const end = blob.indexOf("\\", start); // closing `\"`
-  return end > 0 ? blob.slice(start, end) : "";
-}
-
-/** Parse the gallery DOM into free+chat, non-deprecated candidates.
- * Only a passed DEPRECATION date drops a model, `available` is not gated,
- * the per-model page fetch already drops uncallable models. */
-export function parseGalleryCandidates(html: string): GalleryCandidate[] {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayMs = today.getTime();
-
-  const blobs = html.split('\\"resourceType\\":\\"ENDPOINT\\"');
-  const seen = new Map<string, GalleryCandidate>();
-  for (let i = 1; i < blobs.length; i++) {
-    const b = blobs[i];
-    if (!b) continue;
-    if (!b.includes(FREE_NEEDLE) || !b.includes(CHAT_NEEDLE)) continue;
-    const rid = b.match(/\\"resourceId\\":\\"([^"]*)\\"/)?.[1];
-    if (!rid || seen.has(rid)) continue;
-    const dep = b.match(DEPREC_RE);
-    if (dep) {
-      const ms = new Date(
-        Number(dep[3]),
-        Number(dep[1]) - 1,
-        Number(dep[2]),
-      ).getTime();
-      if (!Number.isNaN(ms) && ms < todayMs) continue;
-    }
-    const slug = rid.split("/")[1] ?? rid;
-    const publisher = galleryLabelValue(b, "publisher");
-    if (!publisher) continue;
-    const iso = b.match(/\\"dateCreated\\":\\"([^"]*)\\"/)?.[1];
-    const ms = iso ? Date.parse(iso) : NaN;
-    seen.set(rid, {
-      id: `${publisher}/${slug}`,
-      created: Number.isNaN(ms) ? 0 : Math.floor(ms / 1000),
-      ownedBy: publisher,
-    });
-  }
-  return [...seen.values()];
-}
-
-// Only lightpanda solves the gallery WAF, fall back to integrate when unavailable.
-async function fetchGalleryHtml(
-  lightpandaPath: string,
-): Promise<string | null> {
-  let proc: ChildProcess | null = null;
-  let browser: Browser | null = null;
-  try {
-    const cdpPort = await new Promise<number>((resolve, reject) => {
-      const s = createServer();
-      s.on("error", reject);
-      s.listen(0, "127.0.0.1", () => {
-        const p = (s.address() as AddressInfo).port;
-        s.close(() => resolve(p));
-      });
-    });
-    proc = spawn(
-      lightpandaPath,
-      [
-        "serve",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        String(cdpPort),
-        "--log-level",
-        "error",
-      ],
-      { stdio: "ignore" },
-    );
-    const deadline = Date.now() + 15_000;
-    let ready = false;
-    while (Date.now() < deadline && !ready) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
-        if (r.ok) ready = true;
-      } catch {}
-      if (!ready) await new Promise((r) => setTimeout(r, 200));
-    }
-    if (!ready) return null;
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    const ctx = await browser.newContext({});
-    const page = await ctx.newPage();
-    await page
-      .goto(GALLERY_URL, {
-        waitUntil: "domcontentloaded",
-        timeout: 30_000,
-      })
-      .catch(() => {});
-    // domcontentloaded fires on the WAF challenge page before the real one
-    // renders, poll for the ENDPOINT marker once lightpanda solves the WAF.
-    const marker = '\\"resourceType\\":\\"ENDPOINT\\"';
-    for (let i = 0; i < 30; i++) {
-      const html = await page.content();
-      if (html.includes(marker)) return html;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    try {
-      await browser?.close();
-    } catch {}
-    proc?.kill();
-  }
-}
-
-/** Build the servable catalog. Gallery candidates (free chat) need only a
- * real page (chat label vouches for text in/out), integrate fallback
- * candidates must also report Text modalities and set the refresh interval. */
+/** Build the servable catalog: one endpoints list fetch, then a spec fetch
+ * per free chat model to resolve its deploy route. */
 export async function buildCatalog(opts?: {
   fetchImpl?: CatalogFetch;
   concurrency?: number;
   onEvent?: (e: CatalogEvent) => void;
-  lightpandaPath?: string;
-  /** Pre-fetched gallery candidates, skips the lightpanda gallery fetch when set. */
-  galleryCandidates?: GalleryCandidate[];
 }): Promise<CatalogResult> {
   const fetchImpl: CatalogFetch = opts?.fetchImpl ?? fetch;
   const onEvent = opts?.onEvent;
 
-  type Cand = { id: string; created: number; owned_by: string };
-  let candidates: Cand[] | null = null;
-  let refreshMs = DEFAULT_REFRESH_MS;
-  let chatPreFiltered = false;
-
-  if (opts?.galleryCandidates && opts.galleryCandidates.length > 0) {
-    candidates = opts.galleryCandidates.map((m) => ({
-      id: m.id,
-      created: m.created,
-      owned_by: m.ownedBy,
-    }));
-    chatPreFiltered = true;
-    onEvent?.({ type: "gallery-done", count: candidates.length });
-  } else if (opts?.lightpandaPath) {
-    onEvent?.({ type: "gallery-start" });
-    try {
-      const html = await fetchGalleryHtml(opts.lightpandaPath);
-      if (html) {
-        const gc = parseGalleryCandidates(html);
-        if (gc.length > 0) {
-          candidates = gc.map((m) => ({
-            id: m.id,
-            created: m.created,
-            owned_by: m.ownedBy,
-          }));
-          chatPreFiltered = true;
-          onEvent?.({ type: "gallery-done", count: candidates.length });
-        }
-      }
-    } catch {
-      candidates = null;
-    }
-    if (!candidates) onEvent?.({ type: "fallback", reason: "lightpanda/WAF" });
-  }
-
-  if (!candidates) {
-    const r = await fetchImpl(INTEGRATE_MODELS_URL, {
-      headers: { "user-agent": USER_AGENT },
-    });
-    if (!r.ok) throw new Error(`integrate model list ${r.status}`);
-    refreshMs =
-      parseMaxAge(r.headers.get("cache-control")) ?? DEFAULT_REFRESH_MS;
-    const list = (await r.json()) as {
-      data: Array<{ id: string; created: number; owned_by: string }>;
-    };
-    if (!Array.isArray(list.data))
-      throw new Error("integrate model list malformed");
-    candidates = list.data;
-    onEvent?.({ type: "integrate-done", count: candidates.length });
-  }
+  const { json, refreshMs: listRefreshMs } = await fetchEndpoints(fetchImpl);
+  const candidates = endpointCandidates(json);
+  const refreshMs = listRefreshMs ?? DEFAULT_REFRESH_MS;
+  onEvent?.({ type: "list-done", count: candidates.length });
 
   const total = candidates.length;
   const concurrency = opts?.concurrency ?? 4;
@@ -380,26 +214,21 @@ export async function buildCatalog(opts?: {
           outcome,
           reason,
         });
-      for (const slug of slugCandidates(m.id)) {
-        const page = await fetchModelPage(m.id, slug, fetchImpl);
-        if (!page) continue;
-        if (!chatPreFiltered && !isTextInTextOut(page)) {
-          emit("dropped", "not text in/out");
-          return null;
-        }
-        kept++;
-        emit("kept");
-        return {
-          id: m.id,
-          slug,
-          namespace: page.namespace,
-          functionId: page.functionId,
-          created: typeof m.created === "number" ? m.created : 0,
-          ownedBy: m.owned_by,
-        } as CatalogEntry;
+      const spec = await fetchSpec(m.orgName, m.name, fetchImpl);
+      if (!spec) {
+        emit("dropped", "no deployment spec");
+        return null;
       }
-      emit("dropped", "no deployment page");
-      return null;
+      kept++;
+      emit("kept");
+      return {
+        id: m.id,
+        slug: m.name,
+        namespace: spec.namespace,
+        functionId: spec.functionId,
+        created: m.created,
+        ownedBy: m.ownedBy,
+      } as CatalogEntry;
     },
   );
 

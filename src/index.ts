@@ -43,29 +43,14 @@ let catalogRefreshMs = DEFAULT_REFRESH_MS;
 
 const logCatalogEvent = (e: CatalogEvent) => {
   switch (e.type) {
-    case "gallery-start":
+    case "list-done":
       console.log(
-        "nim-playground-provider: discovering free chat models via build.nvidia.com gallery...",
-      );
-      return;
-    case "gallery-done":
-      console.log(
-        `nim-playground-provider: discovered ${e.count} free chat models from gallery`,
-      );
-      return;
-    case "fallback":
-      console.log(
-        `nim-playground-provider: gallery unavailable (${e.reason}); falling back to integrate list`,
-      );
-      return;
-    case "integrate-done":
-      console.log(
-        `nim-playground-provider: discovered ${e.count} models from integrate list`,
+        `nim-playground-provider: discovered ${e.count} free chat models from endpoints list`,
       );
       return;
     case "fetch-start":
       console.log(
-        `nim-playground-provider: fetching ${e.count} model pages (concurrency=${e.concurrency})...`,
+        `nim-playground-provider: fetching ${e.count} model specs (concurrency=${e.concurrency})...`,
       );
       return;
     case "model":
@@ -92,7 +77,6 @@ const refreshCatalog = async () => {
   catalogState = "fetching";
   try {
     const result = await buildCatalog({
-      lightpandaPath,
       concurrency: 8,
       onEvent: logCatalogEvent,
     });
