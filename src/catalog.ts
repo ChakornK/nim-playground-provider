@@ -150,6 +150,7 @@ async function fetchSpec(
 async function fetchEndpoints(fetchImpl: CatalogFetch): Promise<unknown> {
   const r = await fetchImpl(ENDPOINTS_URL, {
     headers: API_HEADERS,
+    signal: AbortSignal.timeout(30_000),
   });
   if (!r.ok) throw new Error(`endpoints list ${r.status}`);
   return r.json();
