@@ -74,6 +74,8 @@ export class Upstream {
       headers: {
         "content-type": "application/json",
         accept: "text/event-stream",
+        // undici corrupts zstd bodies, so only offer gzip/br.
+        "accept-encoding": "gzip, br",
         origin: ORIGIN,
         referer: REFERER,
         "user-agent": USER_AGENT,
