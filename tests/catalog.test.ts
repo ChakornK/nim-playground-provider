@@ -16,7 +16,7 @@ function artifact(o: {
 }) {
   return {
     name: o.name,
-    orgName: o.orgName ?? "qc69jvmznzxy",
+    orgName: o.orgName ?? "test-namespace",
     ...(o.publisher ? { publisher: o.publisher } : {}),
     labels: o.labels ?? ["chat", "Free Endpoint"],
     ...(o.createdDate ? { createdDate: o.createdDate } : {}),
@@ -26,48 +26,48 @@ function artifact(o: {
 const SPEC_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
 
 test("slugCandidates tries the bare name then dots->underscores (deduped)", () => {
-  expect(slugCandidates("z-ai/glm-5.2")).toEqual(["glm-5.2", "glm-5_2"]);
-  expect(slugCandidates("meta/llama-3.1-8b-instruct")).toEqual([
-    "llama-3.1-8b-instruct",
-    "llama-3_1-8b-instruct",
+  expect(slugCandidates("publisher2/model-1.0")).toEqual(["model-1.0", "model-1_0"]);
+  expect(slugCandidates("publisher1/model-3.1")).toEqual([
+    "model-3.1",
+    "model-3_1",
   ]);
   // dotless ids dedupe to a single candidate.
-  expect(slugCandidates("google/gemma-3-12b-it")).toEqual(["gemma-3-12b-it"]);
+  expect(slugCandidates("publisher1/model2")).toEqual(["model2"]);
 });
 
 test("endpointCandidates keeps free chat models and drops the rest", () => {
   const json = {
     artifacts: [
       artifact({
-        name: "glm-5.2",
-        publisher: "z-ai",
-        createdDate: "2026-07-03T20:32:17.807Z",
+        name: "model-1.0",
+        publisher: "publisher2",
+        createdDate: "2026-06-07T04:20:00.069Z",
       }),
       artifact({
         name: "not-chat",
-        publisher: "nvidia",
+        publisher: "publisher1",
         labels: ["Free Endpoint"],
       }),
-      artifact({ name: "not-free", publisher: "nvidia", labels: ["chat"] }),
+      artifact({ name: "not-free", publisher: "publisher1", labels: ["chat"] }),
       artifact({ name: "no-publisher", labels: ["chat", "Free Endpoint"] }),
       artifact({
         name: "CHAT-case",
-        publisher: "nvidia",
+        publisher: "publisher1",
         labels: ["Chat", "Free Endpoint"],
       }),
       // duplicate id collapses to the first occurrence
-      artifact({ name: "glm-5.2", publisher: "z-ai" }),
+      artifact({ name: "model-1.0", publisher: "publisher2" }),
     ],
   };
   const cands = endpointCandidates(json);
   expect(cands.map((c) => c.id).sort()).toEqual([
-    "nvidia/CHAT-case",
-    "z-ai/glm-5.2",
+    "publisher1/CHAT-case",
+    "publisher2/model-1.0",
   ]);
-  const glm = cands.find((c) => c.id === "z-ai/glm-5.2");
-  expect(glm?.ownedBy).toBe("z-ai");
-  expect(glm?.created).toBe(
-    Math.floor(Date.parse("2026-07-03T20:32:17.807Z") / 1000),
+  const m = cands.find((c) => c.id === "publisher2/model-1.0");
+  expect(m?.ownedBy).toBe("publisher2");
+  expect(m?.created).toBe(
+    Math.floor(Date.parse("2026-06-07T04:20:00.069Z") / 1000),
   );
 });
 
@@ -79,37 +79,37 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
         JSON.stringify({
           artifacts: [
             artifact({
-              name: "glm-5.2",
-              publisher: "z-ai",
-              createdDate: "2026-07-03T20:32:17.807Z",
+              name: "model-1.0",
+              publisher: "publisher2",
+              createdDate: "2026-06-07T04:20:00.069Z",
             }),
-            artifact({ name: "kimi-k3", publisher: "moonshotai" }),
-            artifact({ name: "undeployed", publisher: "nvidia" }),
-            artifact({ name: "missing", publisher: "nvidia" }),
+            artifact({ name: "model1", publisher: "publisher1" }),
+            artifact({ name: "undeployed", publisher: "publisher1" }),
+            artifact({ name: "missing", publisher: "publisher1" }),
           ],
         }),
         { status: 200 },
       );
     }
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/glm-5.2/spec`)
+    if (u === `${SPEC_BASE}/test-namespace/model-1.0/spec`)
       return new Response(
         JSON.stringify({
-          namespace: "qc69jvmznzxy",
-          nvcfFunctionId: "glm-fn",
+          namespace: "test-namespace",
+          nvcfFunctionId: "model-1-fn",
         }),
         { status: 200 },
       );
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/kimi-k3/spec`)
+    if (u === `${SPEC_BASE}/test-namespace/model1/spec`)
       return new Response(
         JSON.stringify({
-          namespace: "qc69jvmznzxy",
-          nvcfFunctionId: "mm-fn",
+          namespace: "test-namespace",
+          nvcfFunctionId: "model1-fn",
         }),
         { status: 200 },
       );
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/undeployed/spec`)
+    if (u === `${SPEC_BASE}/test-namespace/undeployed/spec`)
       // spec without nvcfFunctionId -> undeployed, dropped
-      return new Response(JSON.stringify({ namespace: "qc69jvmznzxy" }), {
+      return new Response(JSON.stringify({ namespace: "test-namespace" }), {
         status: 200,
       });
     return new Response("not found", { status: 404 });
@@ -118,20 +118,20 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
   const result = await buildCatalog({ fetchImpl, concurrency: 2 });
   expect(result.entries).toEqual([
     {
-      id: "moonshotai/kimi-k3",
-      slug: "kimi-k3",
-      namespace: "qc69jvmznzxy",
-      functionId: "mm-fn",
+      id: "publisher1/model1",
+      slug: "model1",
+      namespace: "test-namespace",
+      functionId: "model1-fn",
       created: 0,
-      ownedBy: "moonshotai",
+      ownedBy: "publisher1",
     },
     {
-      id: "z-ai/glm-5.2",
-      slug: "glm-5.2",
-      namespace: "qc69jvmznzxy",
-      functionId: "glm-fn",
-      created: Math.floor(Date.parse("2026-07-03T20:32:17.807Z") / 1000),
-      ownedBy: "z-ai",
+      id: "publisher2/model-1.0",
+      slug: "model-1.0",
+      namespace: "test-namespace",
+      functionId: "model-1-fn",
+      created: Math.floor(Date.parse("2026-06-07T04:20:00.069Z") / 1000),
+      ownedBy: "publisher2",
     },
   ]);
 });
@@ -149,23 +149,23 @@ test("resolveModelRoute matches the endpoint by name and reads its spec", async 
     if (u === ENDPOINTS_URL)
       return new Response(
         JSON.stringify({
-          artifacts: [artifact({ name: "glm-5.2", publisher: "z-ai" })],
+          artifacts: [artifact({ name: "model-1.0", publisher: "publisher2" })],
         }),
         { status: 200 },
       );
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/glm-5.2/spec`)
+    if (u === `${SPEC_BASE}/test-namespace/model-1.0/spec`)
       return new Response(
         JSON.stringify({
-          namespace: "qc69jvmznzxy",
-          nvcfFunctionId: "glm-fn",
+          namespace: "test-namespace",
+          nvcfFunctionId: "model-1-fn",
         }),
         { status: 200 },
       );
     return new Response("not found", { status: 404 });
   };
-  expect(await resolveModelRoute("z-ai/glm-5.2", fetchImpl)).toEqual({
-    modelId: "qc69jvmznzxy/glm-5.2",
-    functionId: "glm-fn",
+  expect(await resolveModelRoute("publisher2/model-1.0", fetchImpl)).toEqual({
+    modelId: "test-namespace/model-1.0",
+    functionId: "model-1-fn",
   });
 });
 
@@ -176,26 +176,26 @@ test("resolveModelRoute matches the underscored endpoint name", async () => {
       return new Response(
         JSON.stringify({
           artifacts: [
-            artifact({ name: "llama-3_1-8b-instruct", publisher: "meta" }),
+            artifact({ name: "model-3_1", publisher: "publisher1" }),
           ],
         }),
         { status: 200 },
       );
-    if (u === `${SPEC_BASE}/qc69jvmznzxy/llama-3_1-8b-instruct/spec`)
+    if (u === `${SPEC_BASE}/test-namespace/model-3_1/spec`)
       return new Response(
         JSON.stringify({
-          namespace: "qc69jvmznzxy",
-          nvcfFunctionId: "llama-fn",
+          namespace: "test-namespace",
+          nvcfFunctionId: "model-fn",
         }),
         { status: 200 },
       );
     return new Response("not found", { status: 404 });
   };
   expect(
-    await resolveModelRoute("meta/llama-3.1-8b-instruct", fetchImpl),
+    await resolveModelRoute("publisher1/model-3.1", fetchImpl),
   ).toEqual({
-    modelId: "qc69jvmznzxy/llama-3_1-8b-instruct",
-    functionId: "llama-fn",
+    modelId: "test-namespace/model-3_1",
+    functionId: "model-fn",
   });
 });
 
@@ -203,6 +203,6 @@ test("resolveModelRoute returns null when no endpoint name matches", async () =>
   const fetchImpl = async () =>
     new Response(JSON.stringify({ artifacts: [] }), { status: 200 });
   expect(
-    await resolveModelRoute("google/gemma-3-12b-it", fetchImpl),
+    await resolveModelRoute("publisher1/model2", fetchImpl),
   ).toBeNull();
 });

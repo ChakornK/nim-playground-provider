@@ -30,7 +30,7 @@ const collect = async <T>(it: AsyncGenerator<T>) => {
 
 test("body builder matches captured upstream shape (stream=true)", () => {
   const body = buildUpstreamBody({
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     messages: [{ role: "user", content: "hi" }],
     enableThinking: true,
     stream: true,
@@ -38,7 +38,7 @@ test("body builder matches captured upstream shape (stream=true)", () => {
   expect(body).toEqual({
     stream: true,
     chat_template_kwargs: { enable_thinking: true, clear_thinking: false },
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     temperature: 1,
     top_p: 1,
     max_tokens: 16384,
@@ -49,7 +49,7 @@ test("body builder matches captured upstream shape (stream=true)", () => {
 
 test("body builder omits stream_options when stream=false", () => {
   const body = buildUpstreamBody({
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     messages: [{ role: "user", content: "hi" }],
     enableThinking: false,
     stream: false,
@@ -57,7 +57,7 @@ test("body builder omits stream_options when stream=false", () => {
   expect(body).toEqual({
     stream: false,
     chat_template_kwargs: { enable_thinking: false, clear_thinking: false },
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     temperature: 1,
     top_p: 1,
     max_tokens: 16384,
@@ -72,7 +72,7 @@ test("body builder forwards tools when provided", () => {
     { type: "function", function: { name: "Bash", parameters: {} } },
   ];
   const body = buildUpstreamBody({
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     messages: [{ role: "user", content: "list files" }],
     enableThinking: true,
     stream: true,
@@ -80,7 +80,7 @@ test("body builder forwards tools when provided", () => {
   });
   expect(body).toHaveProperty("tools", tools);
   const bodyNoTools = buildUpstreamBody({
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     messages: [{ role: "user", content: "hi" }],
     enableThinking: true,
     stream: true,

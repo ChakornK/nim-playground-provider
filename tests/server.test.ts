@@ -31,7 +31,7 @@ const upstreamMock = () =>
             id: "chatcmpl-upstream-fake",
             object: "chat.completion",
             created: 1754200000,
-            model: "z-ai/glm-5.2",
+            model: "publisher1/model1",
             choices: [
               {
                 index: 0,
@@ -63,11 +63,11 @@ const deps: ServerDeps = {
     },
   } as unknown as TokenPool,
   upstream: upstreamMock(),
-  model: "moonshotai/kimi-k3",
+  model: "publisher1/model1",
   port: 0,
   defaultRoute: {
-    modelId: "qc69jvmznzxy/minimax-m3",
-    functionId: "minimax-m3-fid",
+    modelId: "test-namespace/default-model",
+    functionId: "default-fid",
   },
 };
 
@@ -90,7 +90,7 @@ test("GET /v1/models advertises the model", async () => {
   const body = await r.json();
   expect(body).toEqual({
     object: "list",
-    data: [{ id: "moonshotai/kimi-k3", object: "model" }],
+    data: [{ id: "publisher1/model1", object: "model" }],
   });
 });
 
@@ -117,7 +117,7 @@ test("no route available returns 503 without consuming a token", async () => {
       },
     } as unknown as TokenPool,
     upstream: upstreamMock(),
-    model: "z-ai/glm-5.2",
+    model: "publisher1/model1",
     port: 0,
   });
   try {
@@ -230,7 +230,7 @@ test("expired captcha token retries with a fresh token", async () => {
             id: "chatcmpl-retry",
             object: "chat.completion",
             created: 1,
-            model: "z-ai/glm-5.2",
+            model: "publisher1/model1",
             choices: [
               {
                 index: 0,
@@ -324,7 +324,7 @@ test("streaming completion passes translated SSE through and burns one token", a
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "moonshotai/kimi-k3",
+      model: "publisher1/model1",
       messages: [{ role: "user", content: "say hi" }],
       stream: true,
     }),
@@ -348,7 +348,7 @@ test("streaming completion passes translated SSE through and burns one token", a
   expect(chatCalls).toBe(beforeChats + 1);
   expect(lastParams?.stream).toBe(true);
   expect(lastParams?.token).toBe("P1_fake_token");
-  expect(lastParams?.model).toBe("moonshotai/kimi-k3");
+  expect(lastParams?.model).toBe("publisher1/model1");
 });
 
 test("non-streaming completion returns an aggregated chat.completion object", async () => {
@@ -356,7 +356,7 @@ test("non-streaming completion returns an aggregated chat.completion object", as
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "moonshotai/kimi-k3",
+      model: "publisher1/model1",
       messages: [{ role: "user", content: "say hi" }],
       stream: false,
     }),
@@ -438,18 +438,20 @@ test("tool result messages (null content, tool_call_id) are accepted", async () 
 describe("with a catalog", () => {
   const catalog = [
     {
-      id: "z-ai/glm-5.2",
-      slug: "glm-5.2",
-      functionId: "glm-fid",
+      id: "publisher1/model2",
+      slug: "model2",
+      namespace: "test-namespace",
+      functionId: "model2-fid",
       created: 1700000000,
-      ownedBy: "z-ai",
+      ownedBy: "publisher1",
     },
     {
-      id: "thinkingmachines/inkling",
-      slug: "inkling",
-      functionId: "inkling-fid",
+      id: "publisher2/model1",
+      slug: "model1",
+      namespace: "test-namespace",
+      functionId: "model1-fid",
       created: 1700000001,
-      ownedBy: "thinkingmachines",
+      ownedBy: "publisher2",
     },
   ];
   let catServer: ServerInstance;
@@ -475,16 +477,16 @@ describe("with a catalog", () => {
       object: "list",
       data: [
         {
-          id: "z-ai/glm-5.2",
+          id: "publisher1/model2",
           object: "model",
           created: 1700000000,
-          owned_by: "z-ai",
+          owned_by: "publisher1",
         },
         {
-          id: "thinkingmachines/inkling",
+          id: "publisher2/model1",
           object: "model",
           created: 1700000001,
-          owned_by: "thinkingmachines",
+          owned_by: "publisher2",
         },
       ],
     });
@@ -511,17 +513,17 @@ describe("with a catalog", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "thinkingmachines/inkling",
+        model: "publisher2/model1",
         messages: [{ role: "user", content: "hi" }],
         stream: true,
       }),
     });
     expect(r.status).toBe(200);
     expect(chatCalls).toBe(before + 1);
-    expect(lastParams?.model).toBe("thinkingmachines/inkling");
+    expect(lastParams?.model).toBe("publisher2/model1");
     expect(lastParams?.route).toEqual({
-      modelId: "qc69jvmznzxy/inkling",
-      functionId: "inkling-fid",
+      modelId: "test-namespace/model1",
+      functionId: "model1-fid",
     });
   });
 });
@@ -539,7 +541,7 @@ test("server reads the catalog from a mutable provider", async () => {
             id: "chatcmpl-x",
             object: "chat.completion",
             created: 1,
-            model: "z-ai/glm-5.2",
+            model: "publisher1/model1",
             choices: [
               {
                 index: 0,
@@ -557,7 +559,7 @@ test("server reads the catalog from a mutable provider", async () => {
         );
       },
     } as unknown as Upstream,
-    model: "moonshotai/kimi-k3",
+    model: "publisher1/model1",
     port: 0,
   });
   const catBase = `http://localhost:${catServer.port}`;
@@ -567,40 +569,41 @@ test("server reads the catalog from a mutable provider", async () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "thinkingmachines/inkling",
+        model: "publisher2/model1",
         messages: [{ role: "user", content: "hi" }],
         stream: false,
       }),
     });
     expect(r1.status).toBe(200);
     expect(lastParams?.route).toEqual({
-      modelId: "qc69jvmznzxy/minimax-m3",
-      functionId: "minimax-m3-fid",
+      modelId: "test-namespace/default-model",
+      functionId: "default-fid",
     });
 
     // once populated, the same request routes by the catalog entry
     current = [
       {
-        id: "thinkingmachines/inkling",
-        slug: "inkling",
-        functionId: "inkling-fid",
+        id: "publisher2/model1",
+        slug: "model1",
+        namespace: "test-namespace",
+        functionId: "model1-fid",
         created: 1,
-        ownedBy: "thinkingmachines",
+        ownedBy: "publisher2",
       },
     ];
     const r2 = await fetch(`${catBase}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "thinkingmachines/inkling",
+        model: "publisher2/model1",
         messages: [{ role: "user", content: "hi" }],
         stream: false,
       }),
     });
     expect(r2.status).toBe(200);
     expect(lastParams?.route).toEqual({
-      modelId: "qc69jvmznzxy/inkling",
-      functionId: "inkling-fid",
+      modelId: "test-namespace/model1",
+      functionId: "model1-fid",
     });
   } finally {
     await catServer.stop(true);
