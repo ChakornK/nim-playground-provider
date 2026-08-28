@@ -34,6 +34,8 @@ if (
 const CATALOG_REFRESH_MS = 1000 * 60 * 60 * 24;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
+let lastCatalogAttempt = 0;
+const CATALOG_RETRY_MS = 60_000;
 
 let defaultRoute: ModelRoute | undefined;
 const deriveDefaultRoute = (): ModelRoute | undefined => {
@@ -78,6 +80,7 @@ const logCatalogEvent = (e: CatalogEvent) => {
 const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
+  lastCatalogAttempt = Date.now();
   try {
     const result = await buildCatalog({
       concurrency: 8,
@@ -93,7 +96,13 @@ const refreshCatalog = async () => {
   }
 };
 const getCatalog = () => {
-  if (catalogState === "idle") void refreshCatalog();
+  // Failed builds wait out the backoff before re-triggering.
+  if (
+    catalogState === "idle" &&
+    Date.now() - lastCatalogAttempt > CATALOG_RETRY_MS
+  ) {
+    void refreshCatalog();
+  }
   return catalog;
 };
 
