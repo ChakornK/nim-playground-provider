@@ -94,6 +94,14 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
   return ok;
 }
 
+// A rejected token (expired or blocked) yields a captcha-mentioning client
+// error, other statuses pass through. Retry with a fresh token.
+const isTokenRejection = (status: number, text: string) =>
+  (status === 400 || status === 401 || status === 403) &&
+  /captcha|hcaptcha|token/i.test(text);
+
+const MAX_TOKEN_RETRIES = 2;
+
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 // Responds 413, then closes the socket once the response is flushed.
@@ -253,13 +261,6 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       );
     }
 
-    // A rejected token (expired or blocked) yields a captcha-mentioning client
-    // error, other statuses pass through. Retry with a fresh token.
-    const isTokenRejection = (status: number, text: string) =>
-      (status === 400 || status === 401 || status === 403) &&
-      /captcha|hcaptcha|token/i.test(text);
-
-    const MAX_TOKEN_RETRIES = 2;
     let up: Response | null = null;
     let lastUpstreamError: { status: number; text: string } | null = null;
     for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
