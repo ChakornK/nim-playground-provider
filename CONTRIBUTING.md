@@ -44,7 +44,7 @@ Live tests need a working Lightpanda install and network access to `build.nvidia
 
 ## Coding style
 
-- Biome (lint) and Prettier (format) define the style. `npm run check` enforces it.
+- Biome handles lint and formatting. `npm run check` enforces it.
 - No new dependencies unless the task is impossible with what's in `package.json`.
 - Keep diffs minimal. Don't reformat unrelated code. Commit messages can be prose.
 

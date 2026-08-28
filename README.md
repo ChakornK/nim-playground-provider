@@ -1,6 +1,6 @@
 # NVIDIA NIM Playground Provider
 
-Get unlimited free access frontier open models like Kimi K3 and Deepseek V4 Pro 0813 via NVIDIA's AI chat models for anything that uses the OpenAI API.
+Get unlimited free access to frontier open models like Kimi K3 and Deepseek V4 Pro 0813 via NVIDIA's AI chat, through anything that uses the OpenAI API.
 
 ## Quick start with Docker
 
@@ -15,6 +15,8 @@ To secure the proxy, add an authorization key with `-e API_KEY=secret1`:
 ```bash
 docker run -e API_KEY=secret1 -p 8787:8787 ghcr.io/chakornk/nim-playground-provider
 ```
+
+The container listens on all interfaces and warns at startup when no `API_KEY` is set. Anyone who can reach the port can use the proxy, so set a key when you expose it beyond your own machine.
 
 ## Use it in a chat app or agent harness
 
@@ -73,7 +75,9 @@ curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completion
 
 Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. `enable_thinking` (default `true`) toggles reasoning mode. The proxy doesn't support `reasoning.effort`.
 
-Each model accepts a different subset of sampling params, read from its published spec. If you send a param the model rejects (e.g. `top_p` to Kimi K3), the proxy drops it and logs a warning instead of failing the request.
+Request a model outside the `GET /v1/models` list and you get a 404. The default model (the `MODEL` variable) keeps working even when the model list fails to load.
+
+Each model accepts a different subset of sampling params, read from its published spec. If you send a param the model rejects (e.g. `top_p` to Kimi K3), the proxy drops it and logs a warning once per model instead of failing the request.
 
 ### `GET /v1/models`
 
