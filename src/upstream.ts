@@ -10,6 +10,8 @@ const DEFAULT_TOP_P = 1;
 const DEFAULT_MAX_TOKENS = 16384;
 const HEADERS_TIMEOUT_MS = 60_000;
 
+const dropsLogged = new Set<string>();
+
 export function buildUpstreamBody(params: {
   model: string;
   messages: OpenAIMessage[];
@@ -32,7 +34,14 @@ export function buildUpstreamBody(params: {
     ] as const
   )
     .filter(([key, v]) => v !== undefined && !allowed(key))
-    .map(([key]) => key);
+    .map(([key]) => key)
+    .filter((key) => {
+      // Log each unsupported param once per model.
+      const seenKey = `${params.model}${key}`;
+      if (dropsLogged.has(seenKey)) return false;
+      dropsLogged.add(seenKey);
+      return true;
+    });
   if (dropped.length > 0) {
     console.warn(
       `[upstream] ${params.model}: dropping unsupported params: ${dropped.join(", ")}`,
