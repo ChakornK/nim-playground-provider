@@ -101,6 +101,8 @@ const isTokenRejection = (status: number, text: string) =>
 
 const MAX_TOKEN_RETRIES = 2;
 
+const STREAM_IDLE_MS = 120_000;
+
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 // Responds 413 and drains the rest of the upload so the client can read the
@@ -322,15 +324,22 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
+        // Cancels the upstream body when no frame arrives for a while.
+        const idle = setTimeout(
+          () => void up.body?.cancel().catch(() => {}),
+          STREAM_IDLE_MS,
+        );
         try {
           for await (const frame of transformStream(
             up.body as ReadableStream<Uint8Array>,
           )) {
+            idle.refresh();
             controller.enqueue(enc.encode(frame));
           }
         } catch {
           // upstream dropped mid-stream, close without a partial [DONE]
         } finally {
+          clearTimeout(idle);
           try {
             controller.close();
           } catch {}

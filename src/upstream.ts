@@ -8,6 +8,7 @@ export function upstreamUrl(modelId: string): string {
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_TOP_P = 1;
 const DEFAULT_MAX_TOKENS = 16384;
+const HEADERS_TIMEOUT_MS = 60_000;
 
 export function buildUpstreamBody(params: {
   model: string;
@@ -77,20 +78,29 @@ export class Upstream {
       allowedParams: params.allowedParams,
     });
 
-    return fetch(upstreamUrl(route.modelId), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "text/event-stream",
-        // undici corrupts zstd bodies, so only offer gzip/br.
-        "accept-encoding": "gzip, br",
-        origin: ORIGIN,
-        referer: REFERER,
-        "user-agent": USER_AGENT,
-        "nv-captcha-token": params.token,
-        "nv-function-id": route.functionId,
-      },
-      body: JSON.stringify(body),
-    });
+    // Bounds the wait for response headers; cleared once headers arrive so
+    // long-running streams are not aborted.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HEADERS_TIMEOUT_MS);
+    try {
+      return await fetch(upstreamUrl(route.modelId), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "text/event-stream",
+          // undici corrupts zstd bodies, so only offer gzip/br.
+          "accept-encoding": "gzip, br",
+          origin: ORIGIN,
+          referer: REFERER,
+          "user-agent": USER_AGENT,
+          "nv-captcha-token": params.token,
+          "nv-function-id": route.functionId,
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
