@@ -22,7 +22,7 @@ export async function* transformStream(
     if (payload === "[DONE]") {
       yield* flush(true);
       yield "data: [DONE]\n\n";
-      continue;
+      return;
     }
     let obj: Record<string, unknown>;
     try {
