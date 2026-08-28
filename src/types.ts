@@ -1,6 +1,7 @@
 export interface OpenAIMessage {
   role: string;
-  content?: string | null;
+  /** Text, or a multimodal content-part array passed through verbatim. */
+  content?: string | Array<Record<string, unknown>> | null;
   tool_call_id?: string;
   tool_calls?: unknown[];
 }
