@@ -107,12 +107,12 @@ const STREAM_IDLE_MS = 120_000;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
-// Responds 413 and drains the rest of the upload so the client can read the
-// response; the connection closes when the request ends.
-function rejectOversized(req: IncomingMessage, res: ServerResponse) {
+// Responds 413. Only called after the body is fully drained: responding mid-
+// upload races the client into reusing a socket whose leftover bytes then
+// parse as the next request's headers (431) or RST the unread response.
+function rejectOversized(res: ServerResponse) {
   res.writeHead(413, {
     "content-type": "application/json",
-    connection: "close",
   });
   res.end(
     JSON.stringify({
@@ -123,7 +123,6 @@ function rejectOversized(req: IncomingMessage, res: ServerResponse) {
       },
     }),
   );
-  req.resume();
 }
 
 /** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
@@ -142,24 +141,24 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       req.method !== "OPTIONS"
     ) {
       const declared = Number(req.headers["content-length"] ?? 0);
-      if (declared > MAX_BODY_BYTES) {
-        rejectOversized(req, res);
-        return;
-      }
       const chunks: Buffer[] = [];
       let size = 0;
       try {
-        for await (const chunk of req) {
-          size += (chunk as Buffer).length;
-          if (size > MAX_BODY_BYTES) {
-            rejectOversized(req, res);
-            return;
-          }
-          chunks.push(Buffer.from(chunk));
-        }
+        await new Promise<void>((resolve, reject) => {
+          req.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size <= MAX_BODY_BYTES) chunks.push(chunk);
+          });
+          req.once("end", resolve);
+          req.once("error", reject);
+        });
       } catch {
         // Client aborted mid-upload; nothing useful left to send.
         res.destroy();
+        return;
+      }
+      if (declared > MAX_BODY_BYTES || size > MAX_BODY_BYTES) {
+        rejectOversized(res);
         return;
       }
       body = Buffer.concat(chunks).toString();
