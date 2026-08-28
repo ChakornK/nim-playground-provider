@@ -87,7 +87,7 @@ export class Upstream {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          accept: "text/event-stream",
+          accept: params.stream ? "text/event-stream" : "application/json",
           // undici corrupts zstd bodies, so only offer gzip/br.
           "accept-encoding": "gzip, br",
           origin: ORIGIN,
