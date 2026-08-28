@@ -191,7 +191,7 @@ test("upstream throw maps to 502 upstream_error", async () => {
   }
 });
 
-test("upstream non-OK maps to 502 with upstream status", async () => {
+test("upstream 429 passes through with its status", async () => {
   const s = await createServer({
     ...deps,
     upstream: {
@@ -207,9 +207,8 @@ test("upstream non-OK maps to 502 with upstream status", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(429);
     const body = await r.json();
-    expect(body.error.type).toBe("upstream_error");
     expect(body.error.message).toContain("429");
   } finally {
     await s.stop(true);
@@ -317,7 +316,8 @@ test("400 mentioning tokens but not captcha is not retried", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(400);
+    expect((await r.json()).error.type).toBe("invalid_request_error");
     expect(calls).toBe(1);
   } finally {
     await s.stop(true);
@@ -342,7 +342,7 @@ test("non-captcha upstream errors are not retried", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(429);
     expect(calls).toBe(1);
   } finally {
     await s.stop(true);

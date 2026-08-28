@@ -311,15 +311,27 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     }
 
     if (!up) {
+      const { status, text } = lastUpstreamError ?? { status: 502, text: "" };
+      // Client errors pass through with their status; 5xx collapse to 502.
+      const isClientError = status >= 400 && status < 500;
       return errorJson(
-        `upstream ${lastUpstreamError?.status}: ${lastUpstreamError?.text.slice(0, 500)}`,
-        502,
-        "upstream_error",
+        `upstream ${status}: ${text.slice(0, 500)}`,
+        isClientError ? status : 502,
+        isClientError ? "invalid_request_error" : "upstream_error",
       );
     }
 
     if (!stream) {
-      const completion = (await up.json()) as Record<string, unknown>;
+      let completion: Record<string, unknown>;
+      try {
+        completion = (await up.json()) as Record<string, unknown>;
+      } catch {
+        return errorJson(
+          "upstream returned a non-JSON body",
+          502,
+          "upstream_error",
+        );
+      }
       completion.id = `chatcmpl-${crypto.randomUUID()}`;
       return json(completion, 200);
     }
