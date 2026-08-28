@@ -1,6 +1,6 @@
 # NVIDIA NIM Playground Provider
 
-Get unlimited free access near-frontier models like GLM-5.2 and Minimax-M3 via NVIDIA's AI chat models for anything that uses the OpenAI API.
+Get unlimited free access frontier open models like Kimi K3 and Deepseek V4 Pro 0813 via NVIDIA's AI chat models for anything that uses the OpenAI API.
 
 ## Quick start with Docker
 
