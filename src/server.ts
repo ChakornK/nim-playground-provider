@@ -97,8 +97,7 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
 // A rejected token (expired or blocked) yields a captcha-mentioning client
 // error, other statuses pass through. Retry with a fresh token.
 const isTokenRejection = (status: number, text: string) =>
-  (status === 400 || status === 401 || status === 403) &&
-  /captcha|hcaptcha|token/i.test(text);
+  (status === 400 || status === 401 || status === 403) && /captcha/i.test(text);
 
 const MAX_TOKEN_RETRIES = 2;
 

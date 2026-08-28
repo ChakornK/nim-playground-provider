@@ -279,6 +279,33 @@ test("expired captcha token retries with a fresh token", async () => {
   }
 });
 
+test("400 mentioning tokens but not captcha is not retried", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        calls++;
+        return new Response("max_tokens exceeds the context window", {
+          status: 400,
+        });
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(502);
+    expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("non-captcha upstream errors are not retried", async () => {
   let calls = 0;
   const s = await createServer({
