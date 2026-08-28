@@ -3,7 +3,6 @@
   "version": "1.4.0",
   "author": "ChakornK <chakornk2007@gmail.com>",
   "license": "MIT",
-  "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {

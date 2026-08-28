@@ -19,6 +19,16 @@ const pool = new TokenPool(session, env.poolSize, {
 });
 const upstream = new Upstream();
 
+if (
+  env.apiKeys.length === 0 &&
+  env.host !== "127.0.0.1" &&
+  env.host !== "localhost"
+) {
+  console.warn(
+    `${TAG} warning: listening on ${env.host} with no API_KEY; anyone who can reach this port can use it`,
+  );
+}
+
 // Catalog awaited at startup, failed build re-triggers on /v1/models, then
 // refreshes on an interval.
 const CATALOG_REFRESH_MS = 1000 * 60 * 60 * 24;
