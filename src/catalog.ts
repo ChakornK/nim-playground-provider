@@ -167,7 +167,10 @@ export async function resolveModelRoute(
     const artifacts =
       (json as { artifacts?: EndpointArtifact[] }).artifacts ?? [];
     const names = slugCandidates(id);
-    const artifact = artifacts.find((a) => a?.name && names.includes(a.name));
+    const publisher = id.split("/", 2)[0];
+    const artifact = artifacts.find(
+      (a) => a?.name && names.includes(a.name) && a.publisher === publisher,
+    );
     if (!artifact) return null;
     const spec = await fetchSpec(artifact.orgName, artifact.name, fetchImpl);
     if (!spec) return null;

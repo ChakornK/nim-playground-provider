@@ -253,6 +253,23 @@ test("resolveModelRoute matches the underscored endpoint name", async () => {
   });
 });
 
+test("resolveModelRoute ignores same-named endpoints from other publishers", async () => {
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    if (u === ENDPOINTS_URL)
+      return new Response(
+        JSON.stringify({
+          artifacts: [
+            artifact({ name: "model-1.0", publisher: "other-publisher" }),
+          ],
+        }),
+        { status: 200 },
+      );
+    return new Response("not found", { status: 404 });
+  };
+  expect(await resolveModelRoute("publisher2/model-1.0", fetchImpl)).toBeNull();
+});
+
 test("resolveModelRoute returns null when no endpoint name matches", async () => {
   const fetchImpl = async () =>
     new Response(JSON.stringify({ artifacts: [] }), { status: 200 });
