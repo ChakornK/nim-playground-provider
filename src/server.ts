@@ -168,9 +168,12 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       if (response.body) {
         // DOM and node:stream/web have separate ReadableStream types,
         // at runtime they're the same object.
-        Readable.fromWeb(
+        const src = Readable.fromWeb(
           response.body as unknown as import("node:stream/web").ReadableStream,
-        ).pipe(res);
+        );
+        // Client disconnect destroys the source, cancelling the upstream body.
+        res.on("close", () => src.destroy());
+        src.pipe(res);
       } else {
         res.end();
       }

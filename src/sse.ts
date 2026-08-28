@@ -32,6 +32,8 @@ export async function* parseSSE(
       }
     }
   } finally {
+    // Cancels the underlying stream when the consumer stops early.
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
