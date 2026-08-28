@@ -20,7 +20,12 @@ const lightpandaExe =
 
 export function detectLightpanda(): string {
   const override = process.env.LIGHTPANDA_PATH;
-  if (override) return override;
+  if (override) {
+    if (!existsSync(override)) {
+      throw new Error(`LIGHTPANDA_PATH does not exist: ${override}`);
+    }
+    return override;
+  }
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     const candidate = join(dir, lightpandaExe);
@@ -41,7 +46,6 @@ export function parseKeys(rawValue: string): string[] {
 export const env = {
   port: num(process.env.PORT, 8787),
   poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
-  lightpandaPath: process.env.LIGHTPANDA_PATH,
   model: process.env.MODEL ?? DEFAULT_MODEL,
   host: process.env.HOST ?? "127.0.0.1",
   apiKeys: parseKeys(process.env.API_KEY ?? ""),

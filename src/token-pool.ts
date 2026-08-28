@@ -15,17 +15,19 @@ export interface TokenPoolOpts {
   acquireTimeoutMs?: number;
   /** Hard limit on concurrent waiters, acquirers beyond it are rejected. */
   maxWaiters?: number;
-  /** Extra mint attempts after the first failure within one refill. */
+  /** Extra mint attempts after the first failure within one refill.
+   * Sources usually retry themselves; the default adds none. */
   maxRetries?: number;
   /** Fires once when the warm pool first reaches `capacity`. */
   onWarm?: (warm: number, capacity: number) => void;
 }
 
+const TOKEN_TTL_MS = 120_000;
+
 export class TokenPool {
-  private tokens: string[] = [];
+  private tokens: { value: string; mintedAt: number }[] = [];
   private refilling = false;
   private waiting: Waiter[] = [];
-  private rearming = false;
   private warmNotified = false;
 
   private source: TokenSource;
@@ -43,12 +45,16 @@ export class TokenPool {
     this.scheduleRefill();
   }
 
-  /** Take a token, blocking until one is available (warm or freshly minted). */
+  /** Take a token, blocking until one is available (warm or freshly minted).
+   * Warm tokens older than the TTL are discarded; hCaptcha tokens are
+   * short-lived. */
   async acquire(): Promise<string> {
-    const token = this.tokens.pop();
-    if (token) {
-      this.scheduleRefill();
-      return token;
+    while (this.tokens.length > 0) {
+      const t = this.tokens.pop();
+      if (t && Date.now() - t.mintedAt < TOKEN_TTL_MS) {
+        this.scheduleRefill();
+        return t.value;
+      }
     }
     const maxWaiters = this.opts.maxWaiters ?? 100;
     if (this.waiting.length >= maxWaiters) {
@@ -71,6 +77,9 @@ export class TokenPool {
     this.refilling = true;
     void this.refill().finally(() => {
       this.refilling = false;
+      // Waiters added while a refill was failing (e.g. retrying from a
+      // rejection handler) need a fresh refill; theirs was skipped above.
+      if (this.waiting.length > 0) this.scheduleRefill();
     });
   }
 
@@ -83,19 +92,19 @@ export class TokenPool {
       try {
         token = await this.mintWithRetry();
       } catch (err) {
-        // Fail all current waiters with this error, re-arm so the pool heals
-        // without waiting for the next acquire.
+        // Fail all current waiters; the next acquire() re-triggers a refill.
         const error = err instanceof Error ? err : new Error(String(err));
         this.deliverError(error);
-        this.rearm();
         return;
       }
       const waiter = this.waiting.shift();
       if (waiter) {
         clearTimeout(waiter.timer);
         waiter.resolve(token);
-      } else {
-        this.tokens.push(token);
+      } else if (this.tokens.length < this.capacity) {
+        // A waiter may have timed out while this mint was in flight; only
+        // stock the token when the pool still has room.
+        this.tokens.push({ value: token, mintedAt: Date.now() });
         if (!this.warmNotified && this.tokens.length >= this.capacity) {
           this.warmNotified = true;
           this.opts.onWarm?.(this.tokens.length, this.capacity);
@@ -106,7 +115,7 @@ export class TokenPool {
   }
 
   private async mintWithRetry(): Promise<string> {
-    const maxRetries = this.opts.maxRetries ?? 2;
+    const maxRetries = this.opts.maxRetries ?? 0;
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -126,14 +135,5 @@ export class TokenPool {
         waiter.reject(err);
       }
     }
-  }
-
-  private rearm() {
-    if (this.rearming) return;
-    this.rearming = true;
-    setTimeout(() => {
-      this.rearming = false;
-      this.scheduleRefill();
-    }, 1_000);
   }
 }

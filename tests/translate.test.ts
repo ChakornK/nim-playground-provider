@@ -127,12 +127,13 @@ test("transformStream flushes held usage when the stream ends without [DONE]", a
   const raw =
     'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n';
   const frames = await collect(transformStream(streamOf(raw)));
-  expect(frames).toHaveLength(1);
+  expect(frames).toHaveLength(2);
   const first = frames[0] as string;
   const parsed = JSON.parse(first.replace(/^data: /, "")) as {
     usage?: { total_tokens: number };
   };
   expect(parsed.usage?.total_tokens).toBe(2);
+  expect(frames[1]).toBe("data: [DONE]\n\n");
 });
 
 test("transformStream drops malformed frames", async () => {

@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 
 function fakeSource(tokens: string[]): TokenSource & { minted: number } {
@@ -108,6 +108,50 @@ test("a single mint failure retries before rejecting waiters", async () => {
   const token = await pool.acquire();
   expect(token).toBe("P1_ok");
   expect(attempts).toBeGreaterThanOrEqual(3);
+});
+
+test("stale warm tokens are discarded and reminted", async () => {
+  const src = fakeSource(["t1", "t2"]);
+  const pool = new TokenPool(src, 1);
+  pool.prewarm();
+  await new Promise((r) => setTimeout(r, 20)); // warm token stocked
+  const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 200_000);
+  try {
+    const t = await pool.acquire();
+    expect(t).toBe("t2-2");
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("pool heals on the next acquire after a mint failure", async () => {
+  let attempts = 0;
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      if (attempts === 1) throw new Error("captcha down");
+      return `P1_healed_${attempts}`;
+    },
+  };
+  const pool = new TokenPool(src, 1);
+
+  await expect(pool.acquire()).rejects.toThrow("captcha down");
+  const token = await pool.acquire();
+  expect(token).toBe("P1_healed_2");
+});
+
+test("a waiter re-acquiring from a rejection handler is served", async () => {
+  let attempts = 0;
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      if (attempts === 1) throw new Error("down");
+      return "P1_ok";
+    },
+  };
+  const pool = new TokenPool(src, 1, { acquireTimeoutMs: 1000 });
+  const result = await pool.acquire().catch(() => pool.acquire());
+  expect(result).toBe("P1_ok");
 });
 
 test("persistent mint failure rejects all waiters after retries exhausted", async () => {

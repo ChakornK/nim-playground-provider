@@ -6,7 +6,7 @@ import type { OpenAIChunk } from "./types.ts";
  * (lookahead), emit it stripped, keep usage only on the last frame before [DONE]. */
 export async function* transformStream(
   upstreamBody: ReadableStream<Uint8Array>,
-  onChunk?: (chunk: OpenAIChunk) => void,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   let held: OpenAIChunk | null = null;
 
@@ -18,11 +18,11 @@ export async function* transformStream(
     yield `data: ${JSON.stringify(chunk)}\n\n`;
   };
 
-  for await (const payload of parseSSE(upstreamBody)) {
+  for await (const payload of parseSSE(upstreamBody, signal)) {
     if (payload === "[DONE]") {
       yield* flush(true);
       yield "data: [DONE]\n\n";
-      continue;
+      return;
     }
     let obj: Record<string, unknown>;
     try {
@@ -38,11 +38,12 @@ export async function* transformStream(
       continue;
     }
     const chunk = obj as unknown as OpenAIChunk;
-    onChunk?.(chunk);
     // emit the previous frame (stripped), then hold this one
     yield* flush(false);
     held = chunk;
   }
-  // stream ended without [DONE], emit anything held with usage intact
+  // stream ended without [DONE], emit anything held with usage intact,
+  // then terminate so strict clients see the sentinel
   yield* flush(true);
+  if (!signal?.aborted) yield "data: [DONE]\n\n";
 }

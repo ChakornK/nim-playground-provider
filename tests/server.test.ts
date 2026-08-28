@@ -5,9 +5,9 @@ import { parseKeys } from "../src/constants.ts";
 import {
   createServer,
   isAuthorized,
-  safeEqual,
   type ServerDeps,
   type ServerInstance,
+  safeEqual,
 } from "../src/server.ts";
 import type { TokenPool } from "../src/token-pool.ts";
 import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";
@@ -90,7 +90,14 @@ test("GET /v1/models advertises the model", async () => {
   const body = await r.json();
   expect(body).toEqual({
     object: "list",
-    data: [{ id: "publisher1/model1", object: "model" }],
+    data: [
+      {
+        id: "publisher1/model1",
+        object: "model",
+        created: 0,
+        owned_by: "publisher1",
+      },
+    ],
   });
 });
 
@@ -98,6 +105,35 @@ test("OPTIONS is answered without CORS headers", async () => {
   const r = await fetch(`${base}/v1/models`, { method: "OPTIONS" });
   expect(r.status).toBe(204);
   expect(r.headers.get("access-control-allow-origin")).toBeNull();
+});
+
+test("oversized request body returns 413", async () => {
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "x".repeat(4 * 1024 * 1024 + 1) }],
+    }),
+  });
+  expect(r.status).toBe(413);
+});
+
+test("oversized chunked body without content-length returns 413", async () => {
+  const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let i = 0; i < 5; i++) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // @ts-expect-error undici requires duplex for streamed bodies
+    duplex: "half",
+    body,
+  });
+  expect(r.status).toBe(413);
 });
 
 test("unknown route returns 404 OpenAI error", async () => {
@@ -162,7 +198,7 @@ test("upstream throw maps to 502 upstream_error", async () => {
   }
 });
 
-test("upstream non-OK maps to 502 with upstream status", async () => {
+test("upstream 429 passes through with its status", async () => {
   const s = await createServer({
     ...deps,
     upstream: {
@@ -178,9 +214,8 @@ test("upstream non-OK maps to 502 with upstream status", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(429);
     const body = await r.json();
-    expect(body.error.type).toBe("upstream_error");
     expect(body.error.message).toContain("429");
   } finally {
     await s.stop(true);
@@ -268,6 +303,34 @@ test("expired captcha token retries with a fresh token", async () => {
   }
 });
 
+test("400 mentioning tokens but not captcha is not retried", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        calls++;
+        return new Response("max_tokens exceeds the context window", {
+          status: 400,
+        });
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error.type).toBe("invalid_request_error");
+    expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("non-captcha upstream errors are not retried", async () => {
   let calls = 0;
   const s = await createServer({
@@ -286,7 +349,7 @@ test("non-captcha upstream errors are not retried", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(429);
     expect(calls).toBe(1);
   } finally {
     await s.stop(true);
@@ -315,6 +378,18 @@ test("POST /v1/chat/completions normalizes null content to empty string", async 
   });
   expect(r.status).toBe(200);
   expect(lastParams?.messages[0]?.content).toBe("");
+});
+
+test("stream omitted defaults to a non-streaming JSON completion", async () => {
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  });
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("application/json");
+  const body = await r.json();
+  expect(body.object).toBe("chat.completion");
 });
 
 test("streaming completion passes translated SSE through and burns one token", async () => {
@@ -504,7 +579,8 @@ describe("with a catalog", () => {
     });
     expect(r.status).toBe(404);
     const body = await r.json();
-    expect(body.error.type).toBe("model_not_found");
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.code).toBe("model_not_found");
   });
 
   test("routing uses the catalog model's slug and function id", async () => {
@@ -564,12 +640,12 @@ test("server reads the catalog from a mutable provider", async () => {
   });
   const catBase = `http://localhost:${catServer.port}`;
   try {
-    // unknown while catalog is empty falls back to the default route
+    // empty catalog: the default model uses the default route
     const r1 = await fetch(`${catBase}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "publisher2/model1",
+        model: "publisher1/model1",
         messages: [{ role: "user", content: "hi" }],
         stream: false,
       }),
@@ -579,6 +655,18 @@ test("server reads the catalog from a mutable provider", async () => {
       modelId: "test-namespace/default-model",
       functionId: "default-fid",
     });
+
+    // empty catalog: unknown models are rejected, not silently rerouted
+    const r1b = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "publisher2/model1",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    });
+    expect(r1b.status).toBe(404);
 
     // once populated, the same request routes by the catalog entry
     current = [

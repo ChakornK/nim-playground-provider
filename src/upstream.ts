@@ -5,6 +5,13 @@ export function upstreamUrl(modelId: string): string {
   return `${UPSTREAM_BASE}/models/${modelId}`;
 }
 
+const DEFAULT_TEMPERATURE = 1;
+const DEFAULT_TOP_P = 1;
+const DEFAULT_MAX_TOKENS = 16384;
+const HEADERS_TIMEOUT_MS = 60_000;
+
+const dropsLogged = new Set<string>();
+
 export function buildUpstreamBody(params: {
   model: string;
   messages: OpenAIMessage[];
@@ -27,7 +34,14 @@ export function buildUpstreamBody(params: {
     ] as const
   )
     .filter(([key, v]) => v !== undefined && !allowed(key))
-    .map(([key]) => key);
+    .map(([key]) => key)
+    .filter((key) => {
+      // Log each unsupported param once per model.
+      const seenKey = `${params.model}${key}`;
+      if (dropsLogged.has(seenKey)) return false;
+      dropsLogged.add(seenKey);
+      return true;
+    });
   if (dropped.length > 0) {
     console.warn(
       `[upstream] ${params.model}: dropping unsupported params: ${dropped.join(", ")}`,
@@ -40,9 +54,13 @@ export function buildUpstreamBody(params: {
       clear_thinking: false,
     },
     model: params.model,
-    ...(allowed("temperature") ? { temperature: params.temperature ?? 1 } : {}),
-    ...(allowed("top_p") ? { top_p: params.topP ?? 1 } : {}),
-    ...(allowed("max_tokens") ? { max_tokens: params.maxTokens ?? 16384 } : {}),
+    ...(allowed("temperature")
+      ? { temperature: params.temperature ?? DEFAULT_TEMPERATURE }
+      : {}),
+    ...(allowed("top_p") ? { top_p: params.topP ?? DEFAULT_TOP_P } : {}),
+    ...(allowed("max_tokens")
+      ? { max_tokens: params.maxTokens ?? DEFAULT_MAX_TOKENS }
+      : {}),
     messages: params.messages,
     ...(params.tools?.length ? { tools: params.tools } : {}),
     ...(params.stream
@@ -69,18 +87,29 @@ export class Upstream {
       allowedParams: params.allowedParams,
     });
 
-    return fetch(upstreamUrl(route.modelId), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "text/event-stream",
-        origin: ORIGIN,
-        referer: REFERER,
-        "user-agent": USER_AGENT,
-        "nv-captcha-token": params.token,
-        "nv-function-id": route.functionId,
-      },
-      body: JSON.stringify(body),
-    });
+    // Bounds the wait for response headers; cleared once headers arrive so
+    // long-running streams are not aborted.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HEADERS_TIMEOUT_MS);
+    try {
+      return await fetch(upstreamUrl(route.modelId), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: params.stream ? "text/event-stream" : "application/json",
+          // undici corrupts zstd bodies, so only offer gzip/br.
+          "accept-encoding": "gzip, br",
+          origin: ORIGIN,
+          referer: REFERER,
+          "user-agent": USER_AGENT,
+          "nv-captcha-token": params.token,
+          "nv-function-id": route.functionId,
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

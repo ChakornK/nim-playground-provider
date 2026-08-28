@@ -1,36 +1,31 @@
 import { BrowserSession } from "./browser.ts";
 import {
   buildCatalog,
-  resolveModelRoute,
   type CatalogEvent,
+  resolveModelRoute,
 } from "./catalog.ts";
-import { detectLightpanda, env } from "./constants.ts";
+import { detectLightpanda, env, NAMESPACE } from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 import { Upstream } from "./upstream.ts";
 
+const TAG = "nim-playground-provider:";
+
 const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize, {
-  onWarm: (warm) =>
-    console.log(`nim-playground-provider: token pool ready (${warm} warm)`),
+  onWarm: (warm) => console.log(`${TAG} token pool ready (${warm} warm)`),
 });
 const upstream = new Upstream();
 
-// Resolve default route first so chat works if catalog build fails.
-console.log(
-  `nim-playground-provider: fetching default route for ${env.model}...`,
-);
-const defaultRoute: ModelRoute | undefined =
-  (await resolveModelRoute(env.model)) ?? undefined;
-if (defaultRoute) {
-  console.log(
-    `nim-playground-provider: resolved default route for ${env.model} (${defaultRoute.modelId})`,
-  );
-} else {
+if (
+  env.apiKeys.length === 0 &&
+  env.host !== "127.0.0.1" &&
+  env.host !== "localhost"
+) {
   console.warn(
-    `nim-playground-provider: could not resolve a route for ${env.model}; chat requests will fail`,
+    `${TAG} warning: listening on ${env.host} with no API_KEY; anyone who can reach this port can use it`,
   );
 }
 
@@ -39,33 +34,44 @@ if (defaultRoute) {
 const CATALOG_REFRESH_MS = 1000 * 60 * 60 * 24;
 let catalog: CatalogEntry[] = [];
 let catalogState: "idle" | "fetching" | "ready" = "idle";
+let lastCatalogAttempt = 0;
+const CATALOG_RETRY_MS = 60_000;
+
+let defaultRoute: ModelRoute | undefined;
+const deriveDefaultRoute = (): ModelRoute | undefined => {
+  const entry = catalog.find((m) => m.id === env.model);
+  return entry
+    ? {
+        modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
+        functionId: entry.functionId,
+      }
+    : undefined;
+};
 
 const logCatalogEvent = (e: CatalogEvent) => {
   switch (e.type) {
     case "list-done":
       console.log(
-        `nim-playground-provider: discovered ${e.count} free chat models from endpoints list`,
+        `${TAG} discovered ${e.count} free chat models from endpoints list`,
       );
       return;
     case "fetch-start":
       console.log(
-        `nim-playground-provider: fetching ${e.count} model specs (concurrency=${e.concurrency})...`,
+        `${TAG} fetching ${e.count} model specs (concurrency=${e.concurrency})...`,
       );
       return;
     case "model":
       if (e.outcome === "kept") {
-        console.log(
-          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id})`,
-        );
+        console.log(`${TAG} fetched ${e.fetched}/${e.total} models (${e.id})`);
       } else {
         console.log(
-          `nim-playground-provider: fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
+          `${TAG} fetched ${e.fetched}/${e.total} models (${e.id}) — dropped: ${e.reason}`,
         );
       }
       return;
     case "fetch-end":
       console.log(
-        `nim-playground-provider: fetched ${e.total}/${e.total} models (${e.kept} kept, ${e.dropped} dropped)`,
+        `${TAG} fetched ${e.total}/${e.total} models (${e.kept} kept, ${e.dropped} dropped)`,
       );
       return;
   }
@@ -74,6 +80,7 @@ const logCatalogEvent = (e: CatalogEvent) => {
 const refreshCatalog = async () => {
   if (catalogState === "fetching") return;
   catalogState = "fetching";
+  lastCatalogAttempt = Date.now();
   try {
     const result = await buildCatalog({
       concurrency: 8,
@@ -81,27 +88,40 @@ const refreshCatalog = async () => {
     });
     catalog = result.entries;
     catalogState = "ready";
-    console.log(
-      `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
-    );
-    setInterval(refreshCatalog, CATALOG_REFRESH_MS);
+    defaultRoute = deriveDefaultRoute() ?? defaultRoute;
+    console.log(`${TAG} catalog ready (${catalog.length} text-capable models)`);
   } catch (e) {
     catalogState = "idle";
-    console.warn(
-      `nim-playground-provider: catalog refresh failed (${(e as Error).message})`,
-    );
+    console.warn(`${TAG} catalog refresh failed (${(e as Error).message})`);
   }
 };
 const getCatalog = () => {
-  if (catalogState === "idle") void refreshCatalog();
+  // Failed builds wait out the backoff before re-triggering.
+  if (
+    catalogState === "idle" &&
+    Date.now() - lastCatalogAttempt > CATALOG_RETRY_MS
+  ) {
+    void refreshCatalog();
+  }
   return catalog;
 };
 
 await refreshCatalog();
+setInterval(refreshCatalog, CATALOG_REFRESH_MS).unref();
 
-console.log(
-  `nim-playground-provider: warming token pool (size=${env.poolSize})`,
-);
+// Falls back to a direct lookup when the catalog build failed.
+defaultRoute ??= (await resolveModelRoute(env.model)) ?? undefined;
+if (defaultRoute) {
+  console.log(
+    `${TAG} resolved default route for ${env.model} (${defaultRoute.modelId})`,
+  );
+} else {
+  console.warn(
+    `${TAG} could not resolve a route for ${env.model}; chat requests will fail`,
+  );
+}
+
+console.log(`${TAG} warming token pool (size=${env.poolSize})`);
 pool.prewarm();
 
 const server = await createServer({
@@ -109,11 +129,11 @@ const server = await createServer({
   upstream,
   model: env.model,
   getCatalog,
-  defaultRoute,
+  getDefaultRoute: () => defaultRoute,
 });
 
 console.log(
-  `nim-playground-provider: listening on http://localhost:${env.port} (pool=${env.poolSize}, default=${env.model})`,
+  `${TAG} listening on ${server.url} (pool=${env.poolSize}, default=${env.model})`,
 );
 
 const stop = async () => {
@@ -121,5 +141,5 @@ const stop = async () => {
   await session.close();
   process.exit(0);
 };
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+process.once("SIGINT", stop);
+process.once("SIGTERM", stop);

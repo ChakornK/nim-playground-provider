@@ -27,6 +27,8 @@ export interface ServerDeps {
   getCatalog?: () => CatalogEntry[];
   /** Fallback deploy route for the default model, used when the catalog is empty. */
   defaultRoute?: ModelRoute;
+  /** Read per request when set, so a route resolved after startup takes effect. */
+  getDefaultRoute?: () => ModelRoute | undefined;
 }
 
 export interface ServerInstance {
@@ -94,6 +96,36 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
   return ok;
 }
 
+// A rejected token (expired or blocked) yields a captcha-mentioning client
+// error, other statuses pass through. Retry with a fresh token.
+const isTokenRejection = (status: number, text: string) =>
+  (status === 400 || status === 401 || status === 403) && /captcha/i.test(text);
+
+const MAX_TOKEN_RETRIES = 2;
+
+const STREAM_IDLE_MS = 120_000;
+
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+// Responds 413 and drains the rest of the upload so the client can read the
+// response; the connection closes when the request ends.
+function rejectOversized(req: IncomingMessage, res: ServerResponse) {
+  res.writeHead(413, {
+    "content-type": "application/json",
+    connection: "close",
+  });
+  res.end(
+    JSON.stringify({
+      error: {
+        message: "request body too large",
+        type: "invalid_request_error",
+        code: "request_too_large",
+      },
+    }),
+  );
+  req.resume();
+}
+
 /** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
 function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -109,8 +141,27 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       req.method !== "HEAD" &&
       req.method !== "OPTIONS"
     ) {
+      const declared = Number(req.headers["content-length"] ?? 0);
+      if (declared > MAX_BODY_BYTES) {
+        rejectOversized(req, res);
+        return;
+      }
       const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      let size = 0;
+      try {
+        for await (const chunk of req) {
+          size += (chunk as Buffer).length;
+          if (size > MAX_BODY_BYTES) {
+            rejectOversized(req, res);
+            return;
+          }
+          chunks.push(Buffer.from(chunk));
+        }
+      } catch {
+        // Client aborted mid-upload; nothing useful left to send.
+        res.destroy();
+        return;
+      }
       body = Buffer.concat(chunks).toString();
     }
     try {
@@ -125,7 +176,12 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       if (response.body) {
         // DOM and node:stream/web have separate ReadableStream types,
         // at runtime they're the same object.
-        Readable.fromWeb(response.body as never).pipe(res);
+        const src = Readable.fromWeb(
+          response.body as unknown as import("node:stream/web").ReadableStream,
+        );
+        // Client disconnect destroys the source, cancelling the upstream body.
+        res.on("close", () => src.destroy());
+        src.pipe(res);
       } else {
         res.end();
       }
@@ -133,8 +189,16 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
         res.end(
-          JSON.stringify({ error: { message: "internal server error" } }),
+          JSON.stringify({
+            error: {
+              message: "internal server error",
+              type: "server_error",
+              code: "internal_error",
+            },
+          }),
         );
+      } else {
+        res.destroy();
       }
     }
   };
@@ -145,8 +209,6 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const apiKeys = deps.apiKeys ?? env.apiKeys;
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
-
-  const lookup = (id: string) => getCatalog().find((m) => m.id === id);
 
   const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
@@ -178,7 +240,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
               created: m.created,
               owned_by: m.ownedBy,
             }))
-          : [{ id: model, object: "model" }];
+          : [
+              {
+                id: model,
+                object: "model",
+                created: 0,
+                owned_by: model.split("/")[0],
+              },
+            ];
       return json({ object: "list", data }, 200);
     }
 
@@ -197,21 +266,28 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       if (m.content == null) m.content = "";
     }
 
-    const stream = body.stream !== false;
+    const stream = body.stream === true;
     const reqModel = body.model ?? model;
-
     const catalog = getCatalog();
-    if (catalog.length > 0 && !lookup(reqModel)) {
-      return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
+    const entry =
+      catalog.length > 0 ? catalog.find((m) => m.id === reqModel) : undefined;
+    // The default model stays routable via its fallback route; other unknown
+    // models are rejected.
+    if (!entry && reqModel !== model) {
+      return errorJson(
+        `model '${reqModel}' not found`,
+        404,
+        "invalid_request_error",
+        "model_not_found",
+      );
     }
-
-    const entry = catalog.length > 0 ? lookup(reqModel) : undefined;
+    const fallbackRoute = deps.getDefaultRoute?.() ?? deps.defaultRoute;
     const route = entry
       ? {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
         }
-      : deps.defaultRoute;
+      : fallbackRoute;
     if (!route) {
       return errorJson(
         `no route available for model '${reqModel}'`,
@@ -220,15 +296,9 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       );
     }
 
-    // A rejected token (expired or blocked) yields a captcha-mentioning client
-    // error, other statuses pass through. Retry with a fresh token.
-    const isTokenRejection = (status: number, text: string) =>
-      (status === 400 || status === 401 || status === 403) &&
-      /captcha|hcaptcha|token/i.test(text);
-
-    const MAX_TOKEN_RETRIES = 2;
     let up: Response | null = null;
     let lastUpstreamError: { status: number; text: string } | null = null;
+    let lastWasRejection = false;
     for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
       let token: string;
       try {
@@ -266,39 +336,64 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       }
       const text = await res.text().catch(() => "");
       lastUpstreamError = { status: res.status, text };
-      if (!isTokenRejection(res.status, text)) break;
+      lastWasRejection = isTokenRejection(res.status, text);
+      if (!lastWasRejection) break;
     }
 
     if (!up) {
+      const { status, text } = lastUpstreamError ?? { status: 502, text: "" };
+      // Captcha rejections after retries are a provider-side failure.
+      // Other client errors pass through with their status; 5xx collapse.
+      const isClientError = !lastWasRejection && status >= 400 && status < 500;
       return errorJson(
-        `upstream ${lastUpstreamError?.status}: ${lastUpstreamError?.text.slice(0, 500)}`,
-        502,
-        "upstream_error",
+        `upstream ${status}: ${text.slice(0, 500)}`,
+        isClientError ? status : 502,
+        isClientError ? "invalid_request_error" : "upstream_error",
       );
     }
 
     if (!stream) {
-      const completion = (await up.json()) as Record<string, unknown>;
+      let completion: Record<string, unknown>;
+      try {
+        completion = (await up.json()) as Record<string, unknown>;
+      } catch {
+        return errorJson(
+          "upstream returned a non-JSON body",
+          502,
+          "upstream_error",
+        );
+      }
       completion.id = `chatcmpl-${crypto.randomUUID()}`;
       return json(completion, 200);
     }
 
+    const upstreamAbort = new AbortController();
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
+        // Aborts the upstream body when no frame arrives for a while.
+        const idle = setTimeout(() => upstreamAbort.abort(), STREAM_IDLE_MS);
+        idle.unref();
         try {
           for await (const frame of transformStream(
             up.body as ReadableStream<Uint8Array>,
+            upstreamAbort.signal,
           )) {
+            idle.refresh();
             controller.enqueue(enc.encode(frame));
           }
         } catch {
           // upstream dropped mid-stream, close without a partial [DONE]
         } finally {
+          clearTimeout(idle);
           try {
             controller.close();
           } catch {}
         }
+      },
+      // Client disconnect lands here; tears down the upstream fetch.
+      cancel() {
+        upstreamAbort.abort();
       },
     });
     return new Response(streamOut, { status: 200, headers: SSE_HEADERS });

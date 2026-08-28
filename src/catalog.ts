@@ -3,6 +3,8 @@ import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
+// ponytail: first page only; the free-chat list fits in 1000 entries today.
+// Follow the next-page cursor if models ever silently vanish from /v1/models.
 export const ENDPOINTS_URL =
   "https://api.ngc.nvidia.com/v2/endpoints?page-size=1000";
 const ENDPOINTS_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
@@ -150,6 +152,7 @@ async function fetchSpec(
 async function fetchEndpoints(fetchImpl: CatalogFetch): Promise<unknown> {
   const r = await fetchImpl(ENDPOINTS_URL, {
     headers: API_HEADERS,
+    signal: AbortSignal.timeout(30_000),
   });
   if (!r.ok) throw new Error(`endpoints list ${r.status}`);
   return r.json();
@@ -166,7 +169,10 @@ export async function resolveModelRoute(
     const artifacts =
       (json as { artifacts?: EndpointArtifact[] }).artifacts ?? [];
     const names = slugCandidates(id);
-    const artifact = artifacts.find((a) => a?.name && names.includes(a.name));
+    const publisher = id.split("/", 2)[0];
+    const artifact = artifacts.find(
+      (a) => a?.name && names.includes(a.name) && a.publisher === publisher,
+    );
     if (!artifact) return null;
     const spec = await fetchSpec(artifact.orgName, artifact.name, fetchImpl);
     if (!spec) return null;
