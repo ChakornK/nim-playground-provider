@@ -90,7 +90,14 @@ test("GET /v1/models advertises the model", async () => {
   const body = await r.json();
   expect(body).toEqual({
     object: "list",
-    data: [{ id: "publisher1/model1", object: "model" }],
+    data: [
+      {
+        id: "publisher1/model1",
+        object: "model",
+        created: 0,
+        owned_by: "publisher1",
+      },
+    ],
   });
 });
 

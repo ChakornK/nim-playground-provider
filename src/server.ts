@@ -236,7 +236,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
               created: m.created,
               owned_by: m.ownedBy,
             }))
-          : [{ id: model, object: "model" }];
+          : [
+              {
+                id: model,
+                object: "model",
+                created: 0,
+                owned_by: model.split("/")[0],
+              },
+            ];
       return json({ object: "list", data }, 200);
     }
 
