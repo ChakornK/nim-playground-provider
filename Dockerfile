@@ -27,12 +27,6 @@ ENV POOL_SIZE=2
 ENV LIGHTPANDA_PATH=/usr/bin/lightpanda
 ENV MODEL=moonshotai/kimi-k3
 
-LABEL org.opencontainers.image.title="NVIDIA NIM Playground Provider" \
-      org.opencontainers.image.description="Free access to frontier open models via NVIDIA's AI chat, through an OpenAI-compatible API" \
-      org.opencontainers.image.source="https://github.com/ChakornK/nim-playground-provider" \
-      org.opencontainers.image.authors="ChakornK <chakornk2007@gmail.com>" \
-      org.opencontainers.image.licenses="MIT"
-
 EXPOSE 8787
 
 # The distroless image sets ENTRYPOINT to node; remaining args go to node.
