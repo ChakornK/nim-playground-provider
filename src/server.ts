@@ -263,6 +263,10 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     if (catalog.length > 0 && !entry) {
       return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
     }
+    // Without a catalog only the default model can be routed.
+    if (catalog.length === 0 && reqModel !== model) {
+      return errorJson(`model '${reqModel}' not found`, 404, "model_not_found");
+    }
 
     const route = entry
       ? {

@@ -632,12 +632,12 @@ test("server reads the catalog from a mutable provider", async () => {
   });
   const catBase = `http://localhost:${catServer.port}`;
   try {
-    // unknown while catalog is empty falls back to the default route
+    // empty catalog: the default model uses the default route
     const r1 = await fetch(`${catBase}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "publisher2/model1",
+        model: "publisher1/model1",
         messages: [{ role: "user", content: "hi" }],
         stream: false,
       }),
@@ -647,6 +647,18 @@ test("server reads the catalog from a mutable provider", async () => {
       modelId: "test-namespace/default-model",
       functionId: "default-fid",
     });
+
+    // empty catalog: unknown models are rejected, not silently rerouted
+    const r1b = await fetch(`${catBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "publisher2/model1",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    });
+    expect(r1b.status).toBe(404);
 
     // once populated, the same request routes by the catalog entry
     current = [
