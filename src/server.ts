@@ -284,6 +284,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
 
     let up: Response | null = null;
     let lastUpstreamError: { status: number; text: string } | null = null;
+    let lastWasRejection = false;
     for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
       let token: string;
       try {
@@ -321,13 +322,15 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       }
       const text = await res.text().catch(() => "");
       lastUpstreamError = { status: res.status, text };
-      if (!isTokenRejection(res.status, text)) break;
+      lastWasRejection = isTokenRejection(res.status, text);
+      if (!lastWasRejection) break;
     }
 
     if (!up) {
       const { status, text } = lastUpstreamError ?? { status: 502, text: "" };
-      // Client errors pass through with their status; 5xx collapse to 502.
-      const isClientError = status >= 400 && status < 500;
+      // Captcha rejections after retries are a provider-side failure.
+      // Other client errors pass through with their status; 5xx collapse.
+      const isClientError = !lastWasRejection && status >= 400 && status < 500;
       return errorJson(
         `upstream ${status}: ${text.slice(0, 500)}`,
         isClientError ? status : 502,
