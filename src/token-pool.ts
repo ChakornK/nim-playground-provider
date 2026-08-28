@@ -26,7 +26,6 @@ export class TokenPool {
   private tokens: string[] = [];
   private refilling = false;
   private waiting: Waiter[] = [];
-  private rearming = false;
   private warmNotified = false;
 
   private source: TokenSource;
@@ -84,11 +83,9 @@ export class TokenPool {
       try {
         token = await this.mintWithRetry();
       } catch (err) {
-        // Fail all current waiters with this error, re-arm so the pool heals
-        // without waiting for the next acquire.
+        // Fail all current waiters; the next acquire() re-triggers a refill.
         const error = err instanceof Error ? err : new Error(String(err));
         this.deliverError(error);
-        this.rearm();
         return;
       }
       const waiter = this.waiting.shift();
@@ -129,14 +126,5 @@ export class TokenPool {
         waiter.reject(err);
       }
     }
-  }
-
-  private rearm() {
-    if (this.rearming) return;
-    this.rearming = true;
-    setTimeout(() => {
-      this.rearming = false;
-      this.scheduleRefill();
-    }, 1_000);
   }
 }
