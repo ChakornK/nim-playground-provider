@@ -183,8 +183,16 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
         res.end(
-          JSON.stringify({ error: { message: "internal server error" } }),
+          JSON.stringify({
+            error: {
+              message: "internal server error",
+              type: "server_error",
+              code: "internal_error",
+            },
+          }),
         );
+      } else {
+        res.destroy();
       }
     }
   };
