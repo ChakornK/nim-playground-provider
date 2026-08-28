@@ -111,6 +111,24 @@ test("oversized request body returns 413", async () => {
   expect(r.status).toBe(413);
 });
 
+test("oversized chunked body without content-length returns 413", async () => {
+  const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let i = 0; i < 5; i++) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // @ts-expect-error undici requires duplex for streamed bodies
+    duplex: "half",
+    body,
+  });
+  expect(r.status).toBe(413);
+});
+
 test("unknown route returns 404 OpenAI error", async () => {
   const r = await fetch(`${base}/nope`, { method: "POST" });
   expect(r.status).toBe(404);

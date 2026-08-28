@@ -103,7 +103,8 @@ const MAX_TOKEN_RETRIES = 2;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
-// Responds 413, then closes the socket once the response is flushed.
+// Responds 413 and drains the rest of the upload so the client can read the
+// response; the connection closes when the request ends.
 function rejectOversized(req: IncomingMessage, res: ServerResponse) {
   res.writeHead(413, {
     "content-type": "application/json",
@@ -117,8 +118,8 @@ function rejectOversized(req: IncomingMessage, res: ServerResponse) {
         code: "request_too_large",
       },
     }),
-    () => req.socket.destroy(),
   );
+  req.resume();
 }
 
 /** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
