@@ -16,6 +16,8 @@ export interface CatalogEntry {
   functionId: string;
   created: number;
   ownedBy: string;
+  /** Params the model accepts, from its OpenAPI spec. Undefined = unknown, send all. */
+  params?: string[];
 }
 
 export interface ModelRoute {
@@ -84,4 +86,6 @@ export interface UpstreamChatParams {
   tools?: unknown[];
   /** Deployment route (predict path + queue function id) for this request. */
   route: { modelId: string; functionId: string };
+  /** Params the model accepts; unsupported ones are dropped before sending. */
+  allowedParams?: string[];
 }

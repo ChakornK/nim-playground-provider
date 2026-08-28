@@ -89,6 +89,34 @@ test("body builder forwards tools when provided", () => {
   expect(bodyNoTools).not.toHaveProperty("tools");
 });
 
+test("body builder drops params the model doesn't support", () => {
+  const base = {
+    model: "publisher1/model1",
+    messages: [{ role: "user", content: "hi" }],
+    enableThinking: true,
+    stream: false,
+  };
+  const body = buildUpstreamBody({
+    ...base,
+    temperature: 0.5,
+    topP: 0.9,
+    maxTokens: 100,
+    allowedParams: ["messages", "temperature", "stream"],
+  });
+  expect(body).not.toHaveProperty("top_p");
+  expect(body).not.toHaveProperty("max_tokens");
+  expect(body).toHaveProperty("temperature", 0.5);
+
+  // defaults are not injected either when unsupported
+  const noDefaults = buildUpstreamBody({
+    ...base,
+    allowedParams: ["messages", "stream"],
+  });
+  expect(noDefaults).not.toHaveProperty("temperature");
+  expect(noDefaults).not.toHaveProperty("top_p");
+  expect(noDefaults).not.toHaveProperty("max_tokens");
+});
+
 test("parseSSE yields each data line, ignores blank lines and CRLF", async () => {
   const raw = "data: a\r\ndata: b\n\n\n\ndata: c";
   const lines = await collect(parseSSE(streamOf(raw)));

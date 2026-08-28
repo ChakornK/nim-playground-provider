@@ -14,7 +14,25 @@ export function buildUpstreamBody(params: {
   enableThinking: boolean;
   stream: boolean;
   tools?: unknown[];
+  /** Params the model accepts; others are dropped. Undefined = allow all. */
+  allowedParams?: string[];
 }) {
+  const allowed = (key: string) =>
+    !params.allowedParams || params.allowedParams.includes(key);
+  const dropped = (
+    [
+      ["temperature", params.temperature],
+      ["top_p", params.topP],
+      ["max_tokens", params.maxTokens],
+    ] as const
+  )
+    .filter(([key, v]) => v !== undefined && !allowed(key))
+    .map(([key]) => key);
+  if (dropped.length > 0) {
+    console.warn(
+      `[upstream] ${params.model}: dropping unsupported params: ${dropped.join(", ")}`,
+    );
+  }
   return {
     stream: params.stream,
     chat_template_kwargs: {
@@ -22,9 +40,9 @@ export function buildUpstreamBody(params: {
       clear_thinking: false,
     },
     model: params.model,
-    temperature: params.temperature ?? 1,
-    top_p: params.topP ?? 1,
-    max_tokens: params.maxTokens ?? 16384,
+    ...(allowed("temperature") ? { temperature: params.temperature ?? 1 } : {}),
+    ...(allowed("top_p") ? { top_p: params.topP ?? 1 } : {}),
+    ...(allowed("max_tokens") ? { max_tokens: params.maxTokens ?? 16384 } : {}),
     messages: params.messages,
     ...(params.tools?.length ? { tools: params.tools } : {}),
     ...(params.stream
@@ -48,6 +66,7 @@ export class Upstream {
       enableThinking: params.enableThinking,
       stream: params.stream,
       tools: params.tools,
+      allowedParams: params.allowedParams,
     });
 
     return fetch(upstreamUrl(route.modelId), {

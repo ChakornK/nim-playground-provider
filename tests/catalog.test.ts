@@ -5,6 +5,7 @@ import {
   ENDPOINTS_URL,
   resolveModelRoute,
   slugCandidates,
+  specParams,
 } from "../src/catalog.ts";
 
 function artifact(o: {
@@ -26,13 +27,70 @@ function artifact(o: {
 const SPEC_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
 
 test("slugCandidates tries the bare name then dots->underscores (deduped)", () => {
-  expect(slugCandidates("publisher2/model-1.0")).toEqual(["model-1.0", "model-1_0"]);
+  expect(slugCandidates("publisher2/model-1.0")).toEqual([
+    "model-1.0",
+    "model-1_0",
+  ]);
   expect(slugCandidates("publisher1/model-3.1")).toEqual([
     "model-3.1",
     "model-3_1",
   ]);
   // dotless ids dedupe to a single candidate.
   expect(slugCandidates("publisher1/model2")).toEqual(["model2"]);
+});
+
+test("specParams extracts chat request params from the OpenAPI spec", () => {
+  const openAPISpec = JSON.stringify({
+    paths: {
+      "/chat/completions": {
+        post: {
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ChatRequest" },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        ChatRequest: {
+          properties: { messages: {}, temperature: {}, stream: {} },
+        },
+      },
+    },
+  });
+  expect(specParams(openAPISpec)).toEqual([
+    "messages",
+    "temperature",
+    "stream",
+  ]);
+  // inline schema (no $ref)
+  expect(
+    specParams(
+      JSON.stringify({
+        paths: {
+          "/v1/chat/completions": {
+            post: {
+              requestBody: {
+                content: {
+                  "application/json": {
+                    schema: { properties: { messages: {}, top_p: {} } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ),
+  ).toEqual(["messages", "top_p"]);
+  // missing or unparseable -> undefined
+  expect(specParams(undefined)).toBeUndefined();
+  expect(specParams("not json")).toBeUndefined();
+  expect(specParams(JSON.stringify({ paths: {} }))).toBeUndefined();
 });
 
 test("endpointCandidates keeps free chat models and drops the rest", () => {
@@ -175,9 +233,7 @@ test("resolveModelRoute matches the underscored endpoint name", async () => {
     if (u === ENDPOINTS_URL)
       return new Response(
         JSON.stringify({
-          artifacts: [
-            artifact({ name: "model-3_1", publisher: "publisher1" }),
-          ],
+          artifacts: [artifact({ name: "model-3_1", publisher: "publisher1" })],
         }),
         { status: 200 },
       );
@@ -191,9 +247,7 @@ test("resolveModelRoute matches the underscored endpoint name", async () => {
       );
     return new Response("not found", { status: 404 });
   };
-  expect(
-    await resolveModelRoute("publisher1/model-3.1", fetchImpl),
-  ).toEqual({
+  expect(await resolveModelRoute("publisher1/model-3.1", fetchImpl)).toEqual({
     modelId: "test-namespace/model-3_1",
     functionId: "model-fn",
   });
@@ -202,7 +256,5 @@ test("resolveModelRoute matches the underscored endpoint name", async () => {
 test("resolveModelRoute returns null when no endpoint name matches", async () => {
   const fetchImpl = async () =>
     new Response(JSON.stringify({ artifacts: [] }), { status: 200 });
-  expect(
-    await resolveModelRoute("publisher1/model2", fetchImpl),
-  ).toBeNull();
+  expect(await resolveModelRoute("publisher1/model2", fetchImpl)).toBeNull();
 });

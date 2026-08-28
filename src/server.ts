@@ -254,6 +254,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           enableThinking: body.enable_thinking !== false,
           stream,
           tools: body.tools,
+          allowedParams: entry?.params,
         });
       } catch (e) {
         return errorJson((e as Error).message, 502, "upstream_error");

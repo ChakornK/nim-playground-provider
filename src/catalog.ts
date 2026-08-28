@@ -33,6 +33,49 @@ interface EndpointArtifact {
 interface EndpointSpec {
   namespace?: string;
   nvcfFunctionId?: string;
+  /** Stringified OpenAPI doc describing the accepted request params. */
+  openAPISpec?: string;
+}
+
+/** Param names the model's chat endpoint accepts, per its OpenAPI spec.
+ * Undefined when the spec is missing or unparseable (send everything). */
+export function specParams(openAPISpec?: string): string[] | undefined {
+  if (!openAPISpec) return undefined;
+  try {
+    const doc = JSON.parse(openAPISpec) as {
+      paths?: Record<
+        string,
+        {
+          post?: {
+            requestBody?: {
+              content?: { "application/json"?: { schema?: unknown } };
+            };
+          };
+        }
+      >;
+      components?: {
+        schemas?: Record<string, { properties?: Record<string, unknown> }>;
+      };
+    };
+    const path = Object.entries(doc.paths ?? {}).find(([p]) =>
+      p.endsWith("/chat/completions"),
+    );
+    let schema = path?.[1].post?.requestBody?.content?.["application/json"]
+      ?.schema as Record<string, unknown> | undefined;
+    // ponytail: one $ref hop covers every spec seen so far
+    const ref = schema?.$ref;
+    if (typeof ref === "string" && ref.startsWith("#/components/schemas/")) {
+      schema = doc.components?.schemas?.[ref.split("/").pop() ?? ""] as
+        | Record<string, unknown>
+        | undefined;
+    }
+    const props = (
+      schema as { properties?: Record<string, unknown> } | undefined
+    )?.properties;
+    return props ? Object.keys(props) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface EndpointCandidate {
@@ -81,7 +124,11 @@ async function fetchSpec(
   orgName: string,
   name: string,
   fetchImpl: CatalogFetch,
-): Promise<{ namespace: string; functionId: string } | null> {
+): Promise<{
+  namespace: string;
+  functionId: string;
+  params?: string[];
+} | null> {
   try {
     const r = await fetchImpl(`${ENDPOINTS_BASE}/${orgName}/${name}/spec`, {
       headers: API_HEADERS,
@@ -90,7 +137,11 @@ async function fetchSpec(
     if (!r.ok) return null;
     const spec = (await r.json()) as EndpointSpec;
     if (!spec.namespace || !spec.nvcfFunctionId) return null;
-    return { namespace: spec.namespace, functionId: spec.nvcfFunctionId };
+    return {
+      namespace: spec.namespace,
+      functionId: spec.nvcfFunctionId,
+      params: specParams(spec.openAPISpec),
+    };
   } catch {
     return null;
   }
@@ -212,6 +263,7 @@ export async function buildCatalog(opts?: {
         functionId: spec.functionId,
         created: m.created,
         ownedBy: m.ownedBy,
+        params: spec.params,
       } as CatalogEntry;
     },
   );
