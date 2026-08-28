@@ -15,7 +15,8 @@ export interface TokenPoolOpts {
   acquireTimeoutMs?: number;
   /** Hard limit on concurrent waiters, acquirers beyond it are rejected. */
   maxWaiters?: number;
-  /** Extra mint attempts after the first failure within one refill. */
+  /** Extra mint attempts after the first failure within one refill.
+   * Sources usually retry themselves; the default adds none. */
   maxRetries?: number;
   /** Fires once when the warm pool first reaches `capacity`. */
   onWarm?: (warm: number, capacity: number) => void;
@@ -94,7 +95,9 @@ export class TokenPool {
       if (waiter) {
         clearTimeout(waiter.timer);
         waiter.resolve(token);
-      } else {
+      } else if (this.tokens.length < this.capacity) {
+        // A waiter may have timed out while this mint was in flight; only
+        // stock the token when the pool still has room.
         this.tokens.push(token);
         if (!this.warmNotified && this.tokens.length >= this.capacity) {
           this.warmNotified = true;
@@ -106,7 +109,7 @@ export class TokenPool {
   }
 
   private async mintWithRetry(): Promise<string> {
-    const maxRetries = this.opts.maxRetries ?? 2;
+    const maxRetries = this.opts.maxRetries ?? 0;
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
