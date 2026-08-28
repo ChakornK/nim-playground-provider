@@ -84,7 +84,6 @@ const refreshCatalog = async () => {
     console.log(
       `nim-playground-provider: catalog ready (${catalog.length} text-capable models)`,
     );
-    setInterval(refreshCatalog, CATALOG_REFRESH_MS);
   } catch (e) {
     catalogState = "idle";
     console.warn(
@@ -98,6 +97,7 @@ const getCatalog = () => {
 };
 
 await refreshCatalog();
+setInterval(refreshCatalog, CATALOG_REFRESH_MS).unref();
 
 console.log(
   `nim-playground-provider: warming token pool (size=${env.poolSize})`,
