@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 
 function fakeSource(tokens: string[]): TokenSource & { minted: number } {
@@ -108,6 +108,20 @@ test("a single mint failure retries before rejecting waiters", async () => {
   const token = await pool.acquire();
   expect(token).toBe("P1_ok");
   expect(attempts).toBeGreaterThanOrEqual(3);
+});
+
+test("stale warm tokens are discarded and reminted", async () => {
+  const src = fakeSource(["t1", "t2"]);
+  const pool = new TokenPool(src, 1);
+  pool.prewarm();
+  await new Promise((r) => setTimeout(r, 20)); // warm token stocked
+  const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 200_000);
+  try {
+    const t = await pool.acquire();
+    expect(t).toBe("t2-2");
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 test("pool heals on the next acquire after a mint failure", async () => {

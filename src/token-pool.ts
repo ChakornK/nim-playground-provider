@@ -22,8 +22,10 @@ export interface TokenPoolOpts {
   onWarm?: (warm: number, capacity: number) => void;
 }
 
+const TOKEN_TTL_MS = 120_000;
+
 export class TokenPool {
-  private tokens: string[] = [];
+  private tokens: { value: string; mintedAt: number }[] = [];
   private refilling = false;
   private waiting: Waiter[] = [];
   private warmNotified = false;
@@ -43,12 +45,16 @@ export class TokenPool {
     this.scheduleRefill();
   }
 
-  /** Take a token, blocking until one is available (warm or freshly minted). */
+  /** Take a token, blocking until one is available (warm or freshly minted).
+   * Warm tokens older than the TTL are discarded; hCaptcha tokens are
+   * short-lived. */
   async acquire(): Promise<string> {
-    const token = this.tokens.pop();
-    if (token) {
-      this.scheduleRefill();
-      return token;
+    while (this.tokens.length > 0) {
+      const t = this.tokens.pop();
+      if (t && Date.now() - t.mintedAt < TOKEN_TTL_MS) {
+        this.scheduleRefill();
+        return t.value;
+      }
     }
     const maxWaiters = this.opts.maxWaiters ?? 100;
     if (this.waiting.length >= maxWaiters) {
@@ -95,7 +101,7 @@ export class TokenPool {
       } else if (this.tokens.length < this.capacity) {
         // A waiter may have timed out while this mint was in flight; only
         // stock the token when the pool still has room.
-        this.tokens.push(token);
+        this.tokens.push({ value: token, mintedAt: Date.now() });
         if (!this.warmNotified && this.tokens.length >= this.capacity) {
           this.warmNotified = true;
           this.opts.onWarm?.(this.tokens.length, this.capacity);
