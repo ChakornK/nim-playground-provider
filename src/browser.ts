@@ -69,6 +69,7 @@ export class BrowserSession {
   private context: BrowserContext | null = null;
   private proc: ChildProcess | null = null;
   private minting: Promise<string> | null = null;
+  private mintGen = 0;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
   private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
   // Persistent invisible widget, reused via reset+execute to avoid per-mint leakage
@@ -93,7 +94,9 @@ export class BrowserSession {
         ),
       )
       .catch(async (e) => {
-        // Persistent failure, close browser so next mint starts clean
+        // Persistent failure, close browser so next mint starts clean. Bumping
+        // the generation stops the retry loop orphaned by the timeout.
+        this.mintGen++;
         await this.close();
         throw e;
       });
@@ -115,8 +118,11 @@ export class BrowserSession {
   }
 
   private async mintWithRetry(): Promise<string> {
+    const gen = this.mintGen;
     let lastError: unknown;
     for (let attempt = 0; attempt < MINT_ATTEMPTS; attempt++) {
+      // A timed-out mint's chain has moved on; don't respawn the browser.
+      if (this.mintGen !== gen) throw new Error("mint superseded");
       try {
         return await this.mintTokenInner();
       } catch (err) {
