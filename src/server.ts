@@ -94,6 +94,26 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
   return ok;
 }
 
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+// Responds 413, then closes the socket once the response is flushed.
+function rejectOversized(req: IncomingMessage, res: ServerResponse) {
+  res.writeHead(413, {
+    "content-type": "application/json",
+    connection: "close",
+  });
+  res.end(
+    JSON.stringify({
+      error: {
+        message: "request body too large",
+        type: "invalid_request_error",
+        code: "request_too_large",
+      },
+    }),
+    () => req.socket.destroy(),
+  );
+}
+
 /** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
 function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -109,8 +129,21 @@ function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
       req.method !== "HEAD" &&
       req.method !== "OPTIONS"
     ) {
+      const declared = Number(req.headers["content-length"] ?? 0);
+      if (declared > MAX_BODY_BYTES) {
+        rejectOversized(req, res);
+        return;
+      }
       const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      let size = 0;
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length;
+        if (size > MAX_BODY_BYTES) {
+          rejectOversized(req, res);
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      }
       body = Buffer.concat(chunks).toString();
     }
     try {

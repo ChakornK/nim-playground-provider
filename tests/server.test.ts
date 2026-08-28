@@ -100,6 +100,17 @@ test("OPTIONS is answered without CORS headers", async () => {
   expect(r.headers.get("access-control-allow-origin")).toBeNull();
 });
 
+test("oversized request body returns 413", async () => {
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "x".repeat(4 * 1024 * 1024 + 1) }],
+    }),
+  });
+  expect(r.status).toBe(413);
+});
+
 test("unknown route returns 404 OpenAI error", async () => {
   const r = await fetch(`${base}/nope`, { method: "POST" });
   expect(r.status).toBe(404);
