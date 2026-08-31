@@ -45,6 +45,14 @@ export class TokenPool {
     this.scheduleRefill();
   }
 
+  /** Drop all warm tokens and mint fresh ones. Call when a token proves bad
+   * mid-request (upstream abort, truncated stream): warm siblings were minted
+   * around the same time and likely share its fate. */
+  invalidate() {
+    this.tokens = [];
+    this.scheduleRefill();
+  }
+
   /** Take a token, blocking until one is available (warm or freshly minted).
    * Warm tokens older than the TTL are discarded; hCaptcha tokens are
    * short-lived. */

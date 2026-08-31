@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Elysia } from "elysia";
 import { env, NAMESPACE } from "./constants.ts";
 import type { TokenPool } from "./token-pool.ts";
-import { transformStream } from "./translate.ts";
+import { type StreamMeta, transformStream } from "./translate.ts";
 import type { CatalogEntry, ChatRequest, ModelRoute } from "./types.ts";
 import type { Upstream } from "./upstream.ts";
 
@@ -299,6 +299,10 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     }
 
     const upstreamAbort = new AbortController();
+    const meta: StreamMeta = { finishReason: null };
+    // Distinguishes a client disconnect from our own idle-timeout abort: the
+    // latter suggests a hung upstream (stale captcha token), not a gone client.
+    let clientGone = false;
     const streamOut = new ReadableStream<Uint8Array>({
       async start(controller) {
         const enc = new TextEncoder();
@@ -309,6 +313,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           for await (const frame of transformStream(
             up.body as ReadableStream<Uint8Array>,
             upstreamAbort.signal,
+            meta,
           )) {
             idle.refresh();
             controller.enqueue(enc.encode(frame));
@@ -317,6 +322,15 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           // upstream dropped mid-stream, close without a partial [DONE]
         } finally {
           clearTimeout(idle);
+          // A stream that ended (or errored) without a finish_reason means
+          // upstream cut it short — usually a stale captcha token. Refresh
+          // the pool so the next request mints fresh tokens.
+          if (!meta.finishReason && !clientGone) {
+            console.warn(
+              "[server] stream ended without finish_reason; refreshing captcha token pool",
+            );
+            deps.pool.invalidate();
+          }
           try {
             controller.close();
           } catch {}
@@ -324,6 +338,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       },
       // Client disconnect lands here; tears down the upstream fetch.
       cancel() {
+        clientGone = true;
         upstreamAbort.abort();
       },
     });

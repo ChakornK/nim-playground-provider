@@ -1025,3 +1025,76 @@ describe("upstream abort retry", () => {
     }
   });
 });
+
+describe("stream without finish_reason refreshes the captcha pool", () => {
+  const truncatedSSE =
+    'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n';
+  const healthySSE =
+    truncatedSSE +
+    'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  const streamingDeps = (sse: string, onInvalidate: () => void) => {
+    const upstream = {
+      async chat() {
+        return new Response(sse, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    } as unknown as Upstream;
+    const pool = {
+      async acquire() {
+        return "P1_stream_token";
+      },
+      invalidate: onInvalidate,
+    } as unknown as TokenPool;
+    return { ...deps, upstream, pool };
+  };
+
+  const postStream = async (server: ServerInstance) => {
+    const r = await fetch(
+      `http://localhost:${server.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "publisher1/model1",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      },
+    );
+    return { status: r.status, body: await r.text() };
+  };
+
+  test("truncated stream invalidates warm tokens", async () => {
+    let invalidations = 0;
+    const s = await createServer(
+      streamingDeps(truncatedSSE, () => invalidations++),
+    );
+    try {
+      const { status, body } = await postStream(s);
+      expect(status).toBe(200);
+      expect(body).toContain("data: [DONE]");
+      expect(invalidations).toBe(1);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("healthy stream with finish_reason leaves the pool alone", async () => {
+    let invalidations = 0;
+    const s = await createServer(
+      streamingDeps(healthySSE, () => invalidations++),
+    );
+    try {
+      const { status, body } = await postStream(s);
+      expect(status).toBe(200);
+      expect(body).toContain("data: [DONE]");
+      expect(invalidations).toBe(0);
+    } finally {
+      await s.stop(true);
+    }
+  });
+});

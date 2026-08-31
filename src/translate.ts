@@ -1,12 +1,18 @@
 import { parseSSE } from "./sse.ts";
 import type { OpenAIChunk } from "./types.ts";
 
+export interface StreamMeta {
+  /** Set when a chunk carries a non-null finish_reason. */
+  finishReason: string | null;
+}
+
 /** Transform upstream SSE frames into OpenAI SSE. Upstream sends usage on every
  * frame, strict OpenAI clients want it only on the final frame. Hold one frame
  * (lookahead), emit it stripped, keep usage only on the last frame before [DONE]. */
 export async function* transformStream(
   upstreamBody: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+  meta?: StreamMeta,
 ): AsyncGenerator<string> {
   let held: OpenAIChunk | null = null;
 
@@ -38,6 +44,8 @@ export async function* transformStream(
       continue;
     }
     const chunk = obj as unknown as OpenAIChunk;
+    const finish = chunk.choices?.[0]?.finish_reason;
+    if (meta && typeof finish === "string") meta.finishReason = finish;
     // emit the previous frame (stripped), then hold this one
     yield* flush(false);
     held = chunk;
