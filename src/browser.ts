@@ -7,6 +7,7 @@ import {
   type Page,
 } from "playwright-core";
 import { env, USER_AGENT } from "./constants.ts";
+import { StealthProxy } from "./stealth.ts";
 
 const HCAPTCHA_API_FALLBACK =
   "https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcLoad";
@@ -27,6 +28,59 @@ function userAgentFromVersion(cdpBrowser: string): string {
     return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${match[1]} Safari/537.36`;
   }
   return USER_AGENT;
+}
+
+/** Aligns navigator.* with the Chrome Linux identity the wire headers now
+ * claim (lightpanda is Chromium-based and otherwise leaks itself). */
+function addChromeSpoof(context: BrowserContext, ua: string) {
+  return context.addInitScript((ua2: string) => {
+    const v = /Chrome\/(\d+)/.exec(ua2)?.[1] ?? "124";
+    Object.defineProperty(navigator, "userAgent", { get: () => ua2 });
+    Object.defineProperty(navigator, "appVersion", {
+      get: () => ua2.replace(/^Mozilla\//, ""),
+    });
+    Object.defineProperty(navigator, "vendor", { get: () => "Google Inc." });
+    Object.defineProperty(navigator, "vendorSub", { get: () => "" });
+    Object.defineProperty(navigator, "platform", { get: () => "Linux x86_64" });
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+    Object.defineProperty(navigator, "maxTouchPoints", { get: () => 0 });
+    Object.defineProperty(navigator, "userAgentData", {
+      get: () => ({
+        brands: [
+          { brand: "Chromium", version: v },
+          { brand: "Google Chrome", version: v },
+          { brand: "Not-A.Brand", version: "99" },
+        ],
+        mobile: false,
+        platform: "Linux",
+        getHighEntropyValues: () =>
+          Promise.resolve({
+            architecture: "x86",
+            bitness: "64",
+            model: "",
+            platformVersion: "6.8.0",
+            uaFullVersion: `${v}.0.0.0`,
+            fullVersionList: [
+              { brand: "Chromium", version: `${v}.0.0.0` },
+              { brand: "Google Chrome", version: `${v}.0.0.0` },
+              { brand: "Not-A.Brand", version: "99.0.0.0" },
+            ],
+            wow64: false,
+          }),
+        toJSON: () => ({}),
+      }),
+    });
+    if (!("chrome" in window)) {
+      Object.defineProperty(window, "chrome", {
+        get: () => ({
+          runtime: {},
+          app: {},
+          csi: () => ({}),
+          loadTimes: () => ({}),
+        }),
+      });
+    }
+  }, ua);
 }
 
 const CDP_READY_TIMEOUT_MS = 15_000;
@@ -68,6 +122,7 @@ export class BrowserSession {
   private page: Page | null = null;
   private context: BrowserContext | null = null;
   private proc: ChildProcess | null = null;
+  private stealth: StealthProxy | null = null;
   private minting: Promise<string> | null = null;
   private mintGen = 0;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
@@ -114,6 +169,9 @@ export class BrowserSession {
       this.widgetId = null;
       this.proc?.kill();
       this.proc = null;
+      const stealth = this.stealth;
+      this.stealth = null;
+      await stealth?.stop();
     }
   }
 
@@ -146,6 +204,22 @@ export class BrowserSession {
       });
     });
 
+    // Route lightpanda through a header-rewriting MITM proxy so the network
+    // fingerprint matches commercial Chrome (its own UA override refuses
+    // Chrome strings and always hints Lightpanda via sec-ch-ua).
+    let proxyArgs: string[] = [];
+    let stealth: StealthProxy | null = null;
+    try {
+      stealth = new StealthProxy();
+      const { proxyUrl, caCertPath } = await stealth.start();
+      proxyArgs = ["--http-proxy", proxyUrl, "--ca-cert", caCertPath];
+    } catch (e) {
+      console.warn(
+        `[browser] stealth proxy unavailable (${(e as Error).message}); lightpanda runs unmasked`,
+      );
+      stealth = null;
+    }
+
     const proc = spawn(
       exe,
       [
@@ -156,6 +230,7 @@ export class BrowserSession {
         String(cdpPort),
         "--log-level",
         "error",
+        ...proxyArgs,
       ],
       { stdio: "ignore" },
     );
@@ -183,9 +258,9 @@ export class BrowserSession {
       const browser = await chromium.connectOverCDP(
         `http://127.0.0.1:${cdpPort}`,
       );
-      const context = await browser.newContext({
-        userAgent: userAgentFromVersion(cdpVersion),
-      });
+      const ua = userAgentFromVersion(cdpVersion);
+      const context = await browser.newContext({ userAgent: ua });
+      await addChromeSpoof(context, ua);
       const page = await context.newPage();
       await page.goto(blankOrigin(), {
         waitUntil: "domcontentloaded",
@@ -230,12 +305,14 @@ export class BrowserSession {
       }, this.sitekey);
 
       this.proc = proc;
+      this.stealth = stealth;
       this.browser = browser;
       this.context = context;
       this.page = page;
       this.widgetId = widgetId;
     } catch (e) {
       proc.kill();
+      await stealth?.stop();
       throw e;
     }
   }
