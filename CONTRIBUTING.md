@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- Node.js 22+
+- Bun 1.4+
 - For live tests or local runs: [Lightpanda](https://github.com/lightpanda-io/browser) on your `PATH` (or set `LIGHTPANDA_PATH`)
 
 ## Setup
@@ -12,7 +12,7 @@
 ```bash
 git clone https://github.com/ChakornK/nim-playground-provider.git
 cd nim-playground-provider
-npm install
+bun install
 ```
 
 ## Making changes
@@ -20,31 +20,31 @@ npm install
 Before opening a PR, run the full check:
 
 ```bash
-npm run check
+bun run check
 ```
 
 Individual tools:
 
 ```bash
-npm run format
-npm run lint
-npm run typecheck
+bun run format
+bun run lint
+bun run typecheck
 ```
 
 ## Tests
 
 ```bash
 # unit + offline integration
-npm test
+bun test
 # live smoke tests
-NVIDIA_LIVE=1 npm test
+NVIDIA_LIVE=1 bun test
 ```
 
 Live tests need a working Lightpanda install and network access to `build.nvidia.com`. Skip them unless your change touches token minting or the NVIDIA API path.
 
 ## Coding style
 
-- Biome handles lint and formatting. `npm run check` enforces it.
+- Biome handles lint and formatting. `bun run check` enforces it.
 - No new dependencies unless the task is impossible with what's in `package.json`.
 - Keep diffs minimal. Don't reformat unrelated code. Commit messages can be prose.
 

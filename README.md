@@ -34,16 +34,16 @@ curl http://localhost:8787/v1/models
 
 ## Run without Docker
 
-You need Node.js 22 or newer, and [Lightpanda](https://github.com/lightpanda-io/browser) on your `PATH` (or set `LIGHTPANDA_PATH`). Then:
+You need [Bun](https://bun.sh) 1.4 or newer, and [Lightpanda](https://github.com/lightpanda-io/browser) on your `PATH` (or set `LIGHTPANDA_PATH`). Then:
 
 ```bash
 git clone https://github.com/ChakornK/nim-playground-provider.git
 cd nim-playground-provider
-npm install
-npm start
+bun install
+bun start
 ```
 
-Add a key with `API_KEY=secret1 npm start` or by creating a `.env` file.
+Add a key with `API_KEY=secret1 bun start` or by creating a `.env` file.
 
 ## Configuration
 
@@ -63,7 +63,7 @@ All settings use environment variables. None are required.
 By default the proxy requires no key. Set `API_KEY` to one or more comma-separated secrets to require a bearer token on every request.
 
 ```bash
-API_KEY=secret1,secret2 npm start
+API_KEY=secret1,secret2 bun start
 curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'

@@ -1,12 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import {
-  createServer as httpCreate,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
-import type { AddressInfo } from "node:net";
-import { Readable } from "node:stream";
+import { Elysia } from "elysia";
 import { env, NAMESPACE } from "./constants.ts";
 import type { TokenPool } from "./token-pool.ts";
 import { transformStream } from "./translate.ts";
@@ -107,101 +100,13 @@ const STREAM_IDLE_MS = 120_000;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
-// Responds 413. Only called after the body is fully drained: responding mid-
-// upload races the client into reusing a socket whose leftover bytes then
-// parse as the next request's headers (431) or RST the unread response.
-function rejectOversized(res: ServerResponse) {
-  res.writeHead(413, {
-    "content-type": "application/json",
-  });
-  res.end(
-    JSON.stringify({
-      error: {
-        message: "request body too large",
-        type: "invalid_request_error",
-        code: "request_too_large",
-      },
-    }),
+const oversized = () =>
+  errorJson(
+    "request body too large",
+    413,
+    "invalid_request_error",
+    "request_too_large",
   );
-}
-
-/** Bridge a Web Request/Response handler to node:http's IncomingMessage/ServerResponse. */
-function httpHandler(fetchHandler: (req: Request) => Promise<Response>) {
-  return async (req: IncomingMessage, res: ServerResponse) => {
-    req.setTimeout(0);
-    const url = `http://${req.headers.host ?? "localhost"}${req.url}`;
-    const headers = new Headers();
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(",") : v);
-    }
-    let body: string | null = null;
-    if (
-      req.method !== "GET" &&
-      req.method !== "HEAD" &&
-      req.method !== "OPTIONS"
-    ) {
-      const declared = Number(req.headers["content-length"] ?? 0);
-      const chunks: Buffer[] = [];
-      let size = 0;
-      try {
-        await new Promise<void>((resolve, reject) => {
-          req.on("data", (chunk: Buffer) => {
-            size += chunk.length;
-            if (size <= MAX_BODY_BYTES) chunks.push(chunk);
-          });
-          req.once("end", resolve);
-          req.once("error", reject);
-        });
-      } catch {
-        // Client aborted mid-upload; nothing useful left to send.
-        res.destroy();
-        return;
-      }
-      if (declared > MAX_BODY_BYTES || size > MAX_BODY_BYTES) {
-        rejectOversized(res);
-        return;
-      }
-      body = Buffer.concat(chunks).toString();
-    }
-    try {
-      const response = await fetchHandler(
-        new Request(url, { method: req.method, headers, body }),
-      );
-      const headerObj: Record<string, string> = {};
-      response.headers.forEach((v, k) => {
-        headerObj[k] = v;
-      });
-      res.writeHead(response.status, headerObj);
-      if (response.body) {
-        // DOM and node:stream/web have separate ReadableStream types,
-        // at runtime they're the same object.
-        const src = Readable.fromWeb(
-          response.body as unknown as import("node:stream/web").ReadableStream,
-        );
-        // Client disconnect destroys the source, cancelling the upstream body.
-        res.on("close", () => src.destroy());
-        src.pipe(res);
-      } else {
-        res.end();
-      }
-    } catch {
-      if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: {
-              message: "internal server error",
-              type: "server_error",
-              code: "internal_error",
-            },
-          }),
-        );
-      } else {
-        res.destroy();
-      }
-    }
-  };
-}
 
 export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const model = deps.model ?? env.model;
@@ -254,7 +159,17 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       return errorJson("Not found", 404, "not_found");
     }
 
-    const body = parseBody(await req.text());
+    // Always drain the body fully before responding: replying mid-upload races
+    // the client into reusing a socket whose leftover bytes then parse as the
+    // next request's headers (431) or RST the unread response.
+    const rawBody = await req.text();
+    if (
+      rawBody.length > MAX_BODY_BYTES ||
+      Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES
+    ) {
+      return oversized();
+    }
+    const body = parseBody(rawBody);
     if (!body) {
       return errorJson("messages must be a non-empty array", 400);
     }
@@ -401,21 +316,28 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const port = deps.port ?? env.port;
   const hostname = deps.host ?? env.host;
 
-  const handler = httpHandler(handleFetch);
-  const server = await new Promise<Server>((resolve, reject) => {
-    const s = httpCreate(handler);
-    s.on("error", reject);
-    s.listen(port, hostname, () => resolve(s));
-  });
-  const addr = server.address() as AddressInfo;
+  const app = new Elysia()
+    .onError(({ error }) =>
+      errorJson(
+        error instanceof Error ? error.message : "internal server error",
+        500,
+        "server_error",
+        "internal_error",
+      ),
+    )
+    .all("/*", ({ request }) => handleFetch(request))
+    .listen({ port, hostname });
 
+  const server = app.server;
+  if (!server) throw new Error("failed to start server");
+
+  const actualPort = server.port ?? port;
   return {
-    port: addr.port,
+    port: actualPort,
     hostname,
-    url: `http://${hostname}:${addr.port}`,
+    url: `http://${hostname}:${actualPort}`,
     stop: async (closeActiveConnections?: boolean) => {
-      if (closeActiveConnections) server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await app.stop(closeActiveConnections);
     },
   };
 }

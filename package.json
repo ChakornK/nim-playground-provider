@@ -6,22 +6,22 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node --experimental-strip-types --max-old-space-size=256 src/index.ts",
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
     "format": "biome format --write .",
     "lint": "biome lint --write .",
-    "test": "vitest run",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "check": "biome check . && tsc --noEmit && vitest run"
+    "check": "biome check . && tsc --noEmit && bun test"
   },
   "dependencies": {
+    "elysia": "^1.4.30",
     "playwright-core": "^1.62.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11",
     "@types/node": "^26.4.0",
-    "vitest": "4.1.11"
-  },
-  "peerDependencies": {
+    "bun-types": "^1.4.0",
     "typescript": "^7.0.2"
   }
 }

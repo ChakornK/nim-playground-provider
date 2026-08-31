@@ -1,12 +1,12 @@
+import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "vitest";
 import { parseSSE } from "../src/sse.ts";
 import { transformStream } from "../src/translate.ts";
 import { buildUpstreamBody } from "../src/upstream.ts";
 
 const fixture = () =>
-  readFileSync(join(__dirname, "fixtures", "upstream.sse"), "utf8");
+  readFileSync(join(import.meta.dir, "fixtures", "upstream.sse"), "utf8");
 
 /** Turn a string into a ReadableStream, chunked unevenly to exercise the parser. */
 function streamOf(text: string, chunk = 40): ReadableStream<Uint8Array> {

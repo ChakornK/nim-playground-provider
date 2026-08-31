@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { expect, spyOn, test } from "bun:test";
 import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 
 function fakeSource(tokens: string[]): TokenSource & { minted: number } {
@@ -115,7 +115,7 @@ test("stale warm tokens are discarded and reminted", async () => {
   const pool = new TokenPool(src, 1);
   pool.prewarm();
   await new Promise((r) => setTimeout(r, 20)); // warm token stocked
-  const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 200_000);
+  const spy = spyOn(Date, "now").mockReturnValue(Date.now() + 200_000);
   try {
     const t = await pool.acquire();
     expect(t).toBe("t2-2");

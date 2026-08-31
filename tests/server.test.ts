@@ -1,6 +1,6 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { parseKeys } from "../src/constants.ts";
 import {
   createServer,
@@ -14,7 +14,7 @@ import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";
 import type { Upstream } from "../src/upstream.ts";
 
 const fixture = () =>
-  readFileSync(join(__dirname, "fixtures", "upstream.sse"), "utf8");
+  readFileSync(join(import.meta.dir, "fixtures", "upstream.sse"), "utf8");
 
 let tokenCalls = 0;
 let chatCalls = 0;

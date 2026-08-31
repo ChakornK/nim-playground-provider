@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { BrowserSession } from "../src/browser.ts";
 import { resolveModelRoute } from "../src/catalog.ts";
 import { detectLightpanda, env } from "../src/constants.ts";

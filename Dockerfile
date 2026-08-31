@@ -1,17 +1,17 @@
 # Build stage
-FROM node:26-bookworm-slim AS build
+FROM oven/bun:1.4.0-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --omit=peer
+COPY package.json bun.lock ./
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --production
 COPY src ./src
 COPY tsconfig.json ./
 # Reference official lightpanda/browser image in build stage
 COPY --from=lightpanda/browser:0.3.7 /usr/bin/lightpanda /usr/bin/lightpanda
 RUN test -x /usr/bin/lightpanda
 
-# Runtime stage: distroless bundles node 26 and CA certificates, and lightpanda
-# links against glibc (debian 13 is trixie).
-FROM gcr.io/distroless/nodejs26-debian13 AS runtime
+# Runtime stage: oven/bun slim (debian glibc, lightpanda links against glibc).
+FROM oven/bun:1.4.0-slim AS runtime
 WORKDIR /app
 # Copy binary from build stage
 COPY --from=build /usr/bin/lightpanda /usr/bin/lightpanda
@@ -29,6 +29,5 @@ ENV MODEL=moonshotai/kimi-k3
 
 EXPOSE 8787
 
-# The distroless image sets ENTRYPOINT to node; remaining args go to node.
-# Node measured 127-152MB RSS / 38-43MB heap under load
-CMD ["--experimental-strip-types", "--max-old-space-size=256", "src/index.ts"]
+USER bun
+CMD ["bun", "src/index.ts"]
