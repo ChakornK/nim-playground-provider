@@ -6,6 +6,15 @@ export interface StreamMeta {
   finishReason: string | null;
 }
 
+/** SSE error frame terminating a stream that ended before finish_reason. */
+export const STREAM_ERROR_FRAME = `data: ${JSON.stringify({
+  error: {
+    message: "upstream stream ended before finish_reason",
+    type: "upstream_error",
+    code: "stream_incomplete",
+  },
+})}\n\n`;
+
 /** Transform upstream SSE frames into OpenAI SSE. Upstream sends usage on every
  * frame, strict OpenAI clients want it only on the final frame. Hold one frame
  * (lookahead), emit it stripped, keep usage only on the last frame before [DONE]. */
@@ -15,6 +24,7 @@ export async function* transformStream(
   meta?: StreamMeta,
 ): AsyncGenerator<string> {
   let held: OpenAIChunk | null = null;
+  let sawFinish = false;
 
   const flush = function* (keepUsage: boolean) {
     if (!held) return;
@@ -45,13 +55,23 @@ export async function* transformStream(
     }
     const chunk = obj as unknown as OpenAIChunk;
     const finish = chunk.choices?.[0]?.finish_reason;
-    if (meta && typeof finish === "string") meta.finishReason = finish;
+    if (typeof finish === "string") {
+      sawFinish = true;
+      if (meta) meta.finishReason = finish;
+    }
     // emit the previous frame (stripped), then hold this one
     yield* flush(false);
     held = chunk;
   }
-  // stream ended without [DONE], emit anything held with usage intact,
-  // then terminate so strict clients see the sentinel
+  // stream ended without [DONE], emit anything held with usage intact
   yield* flush(true);
-  if (!signal?.aborted) yield "data: [DONE]\n\n";
+  if (signal?.aborted) return;
+  if (!sawFinish) {
+    // Terminate with an error frame instead of [DONE] so clients surface a
+    // typed, coded error instead of a bare "Stream ended without
+    // finish_reason" or "terminated".
+    yield STREAM_ERROR_FRAME;
+    return;
+  }
+  yield "data: [DONE]\n\n";
 }

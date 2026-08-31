@@ -2,7 +2,11 @@ import { timingSafeEqual } from "node:crypto";
 import { Elysia } from "elysia";
 import { env, NAMESPACE } from "./constants.ts";
 import type { TokenPool } from "./token-pool.ts";
-import { type StreamMeta, transformStream } from "./translate.ts";
+import {
+  STREAM_ERROR_FRAME,
+  type StreamMeta,
+  transformStream,
+} from "./translate.ts";
 import type { CatalogEntry, ChatRequest, ModelRoute } from "./types.ts";
 import type { Upstream } from "./upstream.ts";
 
@@ -331,7 +335,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             controller.enqueue(enc.encode(frame));
           }
         } catch {
-          // upstream dropped mid-stream, close without a partial [DONE]
+          // upstream dropped mid-stream; the generator throws out of the loop
+          // so it never emitted its error frame — send one here so clients
+          // surface a coded error instead of a bare "terminated".
+          if (!clientGone) {
+            try {
+              controller.enqueue(enc.encode(STREAM_ERROR_FRAME));
+            } catch {}
+          }
         } finally {
           clearTimeout(idle);
           // A stream that ended (or errored) without a finish_reason means

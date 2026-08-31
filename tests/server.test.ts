@@ -1076,7 +1076,8 @@ describe("stream without finish_reason refreshes the captcha pool", () => {
     try {
       const { status, body } = await postStream(s);
       expect(status).toBe(200);
-      expect(body).toContain("data: [DONE]");
+      expect(body).toContain('"code":"stream_incomplete"');
+      expect(body).not.toContain("data: [DONE]");
       expect(invalidations).toBe(1);
     } finally {
       await s.stop(true);

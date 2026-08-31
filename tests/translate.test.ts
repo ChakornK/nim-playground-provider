@@ -123,7 +123,7 @@ test("parseSSE yields each data line, ignores blank lines and CRLF", async () =>
   expect(lines).toEqual(["a", "b", "c"]);
 });
 
-test("transformStream flushes held usage when the stream ends without [DONE]", async () => {
+test("transformStream emits a coded error frame when the stream ends without finish_reason", async () => {
   const raw =
     'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n';
   const frames = await collect(transformStream(streamOf(raw)));
@@ -133,7 +133,11 @@ test("transformStream flushes held usage when the stream ends without [DONE]", a
     usage?: { total_tokens: number };
   };
   expect(parsed.usage?.total_tokens).toBe(2);
-  expect(frames[1]).toBe("data: [DONE]\n\n");
+  const errorFrame = JSON.parse(
+    (frames[1] as string).replace(/^data: /, ""),
+  ) as { error: { type: string; code: string; message: string } };
+  expect(errorFrame.error.type).toBe("upstream_error");
+  expect(errorFrame.error.code).toBe("stream_incomplete");
 });
 
 test("transformStream drops malformed frames", async () => {
