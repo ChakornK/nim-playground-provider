@@ -932,3 +932,96 @@ describe("bearer key auth", () => {
     }
   });
 });
+
+describe("upstream abort retry", () => {
+  const abortingUpstream = (failures: number) => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      upstream: {
+        async chat(params: UpstreamChatParams) {
+          calls++;
+          if (calls <= failures) {
+            throw new DOMException("This operation was aborted", "AbortError");
+          }
+          return upstreamMock().chat(params);
+        },
+      } as unknown as Upstream,
+    };
+  };
+
+  const abortDeps = (failures: number) => {
+    const u = abortingUpstream(failures);
+    let tokens = 0;
+    return {
+      calls: u.calls,
+      tokens: () => tokens,
+      deps: {
+        ...deps,
+        pool: {
+          async acquire() {
+            tokens++;
+            return `P1_token_${tokens}`;
+          },
+        } as unknown as TokenPool,
+        upstream: u.upstream,
+      } satisfies ServerDeps,
+    };
+  };
+
+  const post = (base: string) =>
+    fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "publisher1/model1",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+
+  test("aborted upstream retries with a fresh captcha token", async () => {
+    const h = abortDeps(1);
+    const s = await createServer(h.deps);
+    try {
+      const r = await post(`http://localhost:${s.port}`);
+      expect(r.status).toBe(200);
+      expect(h.calls()).toBe(2);
+      expect(h.tokens()).toBe(2);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("persistent aborts exhaust retries and return 502", async () => {
+    const h = abortDeps(10);
+    const s = await createServer(h.deps);
+    try {
+      const r = await post(`http://localhost:${s.port}`);
+      expect(r.status).toBe(502);
+      const body = await r.json();
+      expect(body.error.type).toBe("upstream_error");
+      expect(body.error.message).toContain("This operation was aborted");
+      expect(h.calls()).toBe(3);
+      expect(h.tokens()).toBe(3);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("non-abort upstream throw does not retry", async () => {
+    const h = abortDeps(0);
+    const failing = {
+      async chat() {
+        throw new Error("connection reset");
+      },
+    } as unknown as Upstream;
+    const s = await createServer({ ...h.deps, upstream: failing });
+    try {
+      const r = await post(`http://localhost:${s.port}`);
+      expect(r.status).toBe(502);
+      expect(h.tokens()).toBe(1);
+    } finally {
+      await s.stop(true);
+    }
+  });
+});

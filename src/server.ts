@@ -96,6 +96,12 @@ const isTokenRejection = (status: number, text: string) =>
 
 const MAX_TOKEN_RETRIES = 2;
 
+// The upstream headers timeout aborts the fetch, surfacing as "AbortError:
+// This operation was aborted" — usually a stale captcha token hanging the
+// request rather than a genuine outage.
+const isUpstreamAbort = (e: unknown) =>
+  e instanceof Error && (e.name === "AbortError" || /aborted/i.test(e.message));
+
 const STREAM_IDLE_MS = 120_000;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -241,6 +247,17 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           allowedParams: entry?.params,
         });
       } catch (e) {
+        // A hung upstream (headers-timeout abort) usually means the captcha
+        // token went stale: discard it by retrying, which draws a freshly
+        // minted token from the pool's refill.
+        if (isUpstreamAbort(e) && attempt < MAX_TOKEN_RETRIES) {
+          lastUpstreamError = { status: 502, text: (e as Error).message };
+          lastWasRejection = true;
+          console.warn(
+            `[server] upstream aborted (attempt ${attempt + 1}/${MAX_TOKEN_RETRIES + 1}), retrying with a fresh captcha token`,
+          );
+          continue;
+        }
         return errorJson((e as Error).message, 502, "upstream_error");
       }
 
