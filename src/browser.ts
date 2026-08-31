@@ -15,6 +15,10 @@ const HCAPTCHA_API_FALLBACK =
 const blankOrigin = () => `https://build.nvidia.com/${env.model}`;
 const HCAPTCHA_SITEKEY_FALLBACK = "0c6a1e45-75d7-43cc-b836-a0c9d886b8ee";
 
+const debugCaptcha = (...args: unknown[]) => {
+  if (process.env.DEBUG_CAPTCHA) console.error("[captcha]", ...args);
+};
+
 function appendOnloadParam(src: string): string {
   const u = new URL(src);
   u.searchParams.set("render", "explicit");
@@ -86,8 +90,8 @@ function addChromeSpoof(context: BrowserContext, ua: string) {
 const CDP_READY_TIMEOUT_MS = 15_000;
 
 const MINT_ATTEMPTS = 3;
-const MINT_TIMEOUT_MS = 60_000;
-const TOKEN_POLL_TIMEOUT_MS = 30_000;
+const MINT_TIMEOUT_MS = 120_000;
+const TOKEN_POLL_TIMEOUT_MS = 45_000;
 
 interface HCaptchaWindow extends Window {
   __hcLoad?: () => void;
@@ -120,7 +124,6 @@ export async function withTimeout<T>(
 export class BrowserSession {
   private browser: Browser | null = null;
   private page: Page | null = null;
-  private context: BrowserContext | null = null;
   private proc: ChildProcess | null = null;
   private stealth: StealthProxy | null = null;
   private minting: Promise<string> | null = null;
@@ -165,7 +168,6 @@ export class BrowserSession {
     } finally {
       this.browser = null;
       this.page = null;
-      this.context = null;
       this.widgetId = null;
       this.proc?.kill();
       this.proc = null;
@@ -192,6 +194,7 @@ export class BrowserSession {
 
   private async ensureBrowser() {
     if (this.browser) return;
+    debugCaptcha("starting browser");
     const exe = this.opts.lightpandaPath;
     if (!exe) throw new Error("LIGHTPANDA_PATH not set");
 
@@ -211,7 +214,9 @@ export class BrowserSession {
     let stealth: StealthProxy | null = null;
     try {
       stealth = new StealthProxy();
+      debugCaptcha("starting stealth proxy");
       const { proxyUrl, caCertPath } = await stealth.start();
+      debugCaptcha("stealth proxy ready", proxyUrl);
       proxyArgs = ["--http-proxy", proxyUrl, "--ca-cert", caCertPath];
     } catch (e) {
       console.warn(
@@ -254,19 +259,33 @@ export class BrowserSession {
         await new Promise((r) => setTimeout(r, 200));
       }
       if (!cdpVersion) throw new Error("lightpanda CDP endpoint not ready");
+      debugCaptcha("CDP ready", cdpVersion);
 
       const browser = await chromium.connectOverCDP(
         `http://127.0.0.1:${cdpPort}`,
       );
+      debugCaptcha("CDP connected");
       const ua = userAgentFromVersion(cdpVersion);
       const context = await browser.newContext({ userAgent: ua });
       await addChromeSpoof(context, ua);
+      // hCaptcha only needs the correct build.nvidia.com origin and sitekey.
+      // Loading NVIDIA's full app pulls dozens of irrelevant analytics/assets
+      // through the MITM proxy and can consume the whole mint deadline.
+      await context.route(blankOrigin(), (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "text/html",
+          body: "<!doctype html><html><head></head><body></body></html>",
+        }),
+      );
       const page = await context.newPage();
+      debugCaptcha("loading NVIDIA origin");
       await page.goto(blankOrigin(), {
         waitUntil: "domcontentloaded",
         timeout: MINT_TIMEOUT_MS,
       });
 
+      debugCaptcha("NVIDIA origin loaded");
       const scraped = await page.evaluate(() => {
         const keyEl = document.querySelector("[data-sitekey]");
         const scriptEl = document.querySelector<HTMLScriptElement>(
@@ -283,6 +302,7 @@ export class BrowserSession {
       }
 
       // Load hCaptcha api.js, calls __hcLoad() when ready
+      debugCaptcha("loading hCaptcha API", this.hcaptchaApiUrl);
       await page.evaluate((apiUrl) => {
         const w = window as unknown as HCaptchaWindow;
         return new Promise<void>((resolve, reject) => {
@@ -294,6 +314,7 @@ export class BrowserSession {
         });
       }, this.hcaptchaApiUrl);
 
+      debugCaptcha("hCaptcha API ready");
       const widgetId = await page.evaluate((sitekey) => {
         const w = window as unknown as HCaptchaWindow;
         const div = document.createElement("div");
@@ -304,10 +325,10 @@ export class BrowserSession {
         return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
       }, this.sitekey);
 
+      debugCaptcha("hCaptcha widget ready", widgetId);
       this.proc = proc;
       this.stealth = stealth;
       this.browser = browser;
-      this.context = context;
       this.page = page;
       this.widgetId = widgetId;
     } catch (e) {
@@ -324,12 +345,14 @@ export class BrowserSession {
     const widgetId = this.widgetId;
     if (!widgetId) throw new Error("no widget");
 
+    debugCaptcha("executing hCaptcha widget");
     await page.evaluate((id) => {
       const w = window as unknown as HCaptchaWindow;
       w.hcaptcha.reset(id);
       return w.hcaptcha.execute(id);
     }, widgetId);
 
+    debugCaptcha("waiting for captcha token");
     await page.waitForFunction(
       (id) => {
         const w = window as unknown as HCaptchaWindow;
@@ -340,6 +363,7 @@ export class BrowserSession {
       { timeout: TOKEN_POLL_TIMEOUT_MS },
     );
 
+    debugCaptcha("captcha token received");
     const token = await page.evaluate((id) => {
       const w = window as unknown as HCaptchaWindow;
       return w.hcaptcha.getResponse(id);

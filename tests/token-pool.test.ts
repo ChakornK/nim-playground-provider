@@ -110,6 +110,29 @@ test("a single mint failure retries before rejecting waiters", async () => {
   expect(attempts).toBeGreaterThanOrEqual(3);
 });
 
+test("prewarm retries after a transient mint failure", async () => {
+  let attempts = 0;
+  const errors: string[] = [];
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      if (attempts === 1) throw new Error("transient warmup failure");
+      return "P1_warm";
+    },
+  };
+  const pool = new TokenPool(src, 1, {
+    prewarmRetryMs: 5,
+    onError: (error) => errors.push(error.message),
+  });
+
+  pool.prewarm();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  expect(errors).toEqual(["transient warmup failure"]);
+  expect(attempts).toBeGreaterThanOrEqual(2);
+  expect(await pool.acquire()).toBe("P1_warm");
+});
+
 test("stale warm tokens are discarded and reminted", async () => {
   const src = fakeSource(["t1", "t2"]);
   const pool = new TokenPool(src, 1);

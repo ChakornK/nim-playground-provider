@@ -42,6 +42,26 @@ const STRIP_HEADERS = new Set([
 const CA_LIFETIME_DAYS = "3650";
 const CERT_LIFETIME_DAYS = "825";
 
+/** fetch() returns decoded response bytes while retaining the upstream
+ * Content-Encoding header. Strip representation/framing lengths before
+ * forwarding and calculate a fresh Content-Length from the decoded body. */
+export function forwardedResponseHeaders(
+  headers: Headers,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((v, k) => {
+    if (
+      k !== "transfer-encoding" &&
+      k !== "connection" &&
+      k !== "content-length" &&
+      k !== "content-encoding"
+    ) {
+      out[k] = v;
+    }
+  });
+  return out;
+}
+
 interface CertPair {
   key: string;
   cert: string;
@@ -72,7 +92,10 @@ export class StealthProxy {
     this.caCertPath = join(this.dir, "ca.crt");
     this.caKeyPath = join(this.dir, "ca.key");
     this.inner = http.createServer((req, res) => {
-      void this.handleRequest(req, res).catch(() => {
+      void this.handleRequest(req, res).catch((error) => {
+        if (process.env.DEBUG_CAPTCHA) {
+          console.error("[captcha-proxy]", req.url, error);
+        }
         if (!res.headersSent) res.writeHead(502);
         res.end();
       });
@@ -246,17 +269,17 @@ export class StealthProxy {
       body,
       redirect: "manual",
     });
+    if (process.env.DEBUG_CAPTCHA) {
+      console.error(
+        "[captcha-proxy]",
+        req.method,
+        target,
+        upstream.status,
+        upstream.headers.get("content-encoding") ?? "identity",
+      );
+    }
 
-    const out: Record<string, string> = {};
-    upstream.headers.forEach((v, k) => {
-      if (
-        k !== "transfer-encoding" &&
-        k !== "connection" &&
-        k !== "content-length"
-      ) {
-        out[k] = v;
-      }
-    });
+    const out = forwardedResponseHeaders(upstream.headers);
     if (upstream.body) {
       const buf = Buffer.from(await upstream.arrayBuffer());
       out["content-length"] = String(buf.byteLength);

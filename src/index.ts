@@ -23,6 +23,10 @@ const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });
 const pool = new TokenPool(session, env.poolSize, {
   onWarm: (warm) => console.log(`${TAG} token pool ready (${warm} warm)`),
+  onError: (error) =>
+    console.warn(
+      `${TAG} token pool refresh failed (${error.message}); retrying`,
+    ),
 });
 const upstream = new Upstream();
 

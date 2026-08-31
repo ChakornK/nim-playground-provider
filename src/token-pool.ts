@@ -20,6 +20,10 @@ export interface TokenPoolOpts {
   maxRetries?: number;
   /** Fires once when the warm pool first reaches `capacity`. */
   onWarm?: (warm: number, capacity: number) => void;
+  /** Reports mint failures, including background prewarm failures. */
+  onError?: (error: Error) => void;
+  /** Delay before retrying a failed background prewarm. */
+  prewarmRetryMs?: number;
 }
 
 const TOKEN_TTL_MS = 120_000;
@@ -29,6 +33,8 @@ export class TokenPool {
   private refilling = false;
   private waiting: Waiter[] = [];
   private warmNotified = false;
+  private keepWarm = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private source: TokenSource;
   private capacity: number;
@@ -42,6 +48,7 @@ export class TokenPool {
 
   /** Start background refilling immediately, non-blocking. */
   prewarm() {
+    this.keepWarm = true;
     this.scheduleRefill();
   }
 
@@ -100,9 +107,13 @@ export class TokenPool {
       try {
         token = await this.mintWithRetry();
       } catch (err) {
-        // Fail all current waiters; the next acquire() re-triggers a refill.
+        // Fail current waiters, but keep retrying a requested background
+        // prewarm. Previously one transient browser/proxy failure left the
+        // pool permanently cold until a request happened to arrive.
         const error = err instanceof Error ? err : new Error(String(err));
+        this.opts.onError?.(error);
         this.deliverError(error);
+        if (this.keepWarm) this.schedulePrewarmRetry();
         return;
       }
       const waiter = this.waiting.shift();
@@ -120,6 +131,15 @@ export class TokenPool {
       }
       deficit = this.capacity - this.tokens.length + this.waiting.length;
     }
+  }
+
+  private schedulePrewarmRetry() {
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.scheduleRefill();
+    }, this.opts.prewarmRetryMs ?? 5_000);
+    this.retryTimer.unref();
   }
 
   private async mintWithRetry(): Promise<string> {
