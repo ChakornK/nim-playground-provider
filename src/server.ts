@@ -68,6 +68,12 @@ const errorJson = (
   code = type,
 ) => json({ error: { message, type, code } }, status);
 
+/** Logs an upstream_error and returns its message for the response body. */
+const logUpstreamError = (message: string): string => {
+  console.error(`[server] upstream_error: ${message}`);
+  return message;
+};
+
 export function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, "utf8");
   const bb = Buffer.from(b, "utf8");
@@ -258,7 +264,11 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           );
           continue;
         }
-        return errorJson((e as Error).message, 502, "upstream_error");
+        return errorJson(
+          logUpstreamError((e as Error).message),
+          502,
+          "upstream_error",
+        );
       }
 
       if (res.ok) {
@@ -276,8 +286,10 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       // Captcha rejections after retries are a provider-side failure.
       // Other client errors pass through with their status; 5xx collapse.
       const isClientError = !lastWasRejection && status >= 400 && status < 500;
+      const message = `upstream ${status}: ${text.slice(0, 500)}`;
+      if (!isClientError) logUpstreamError(message);
       return errorJson(
-        `upstream ${status}: ${text.slice(0, 500)}`,
+        message,
         isClientError ? status : 502,
         isClientError ? "invalid_request_error" : "upstream_error",
       );

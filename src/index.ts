@@ -4,13 +4,20 @@ import {
   type CatalogEvent,
   resolveModelRoute,
 } from "./catalog.ts";
-import { detectLightpanda, env, NAMESPACE } from "./constants.ts";
+import {
+  detectLightpanda,
+  env,
+  NAMESPACE,
+  SERVER_VERSION,
+} from "./constants.ts";
 import { createServer } from "./server.ts";
 import { TokenPool } from "./token-pool.ts";
 import type { CatalogEntry, ModelRoute } from "./types.ts";
 import { Upstream } from "./upstream.ts";
 
 const TAG = "nim-playground-provider:";
+
+console.log(`${TAG} running ${SERVER_VERSION}`);
 
 const lightpandaPath = detectLightpanda();
 const session = new BrowserSession({ lightpandaPath });

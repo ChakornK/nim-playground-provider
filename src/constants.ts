@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
+export const SERVER_VERSION = "1.5.2";
 export const DEFAULT_MODEL = "moonshotai/kimi-k3";
 export const UPSTREAM_BASE = "https://api.ngc.nvidia.com/v2/predict";
 export const NAMESPACE = "qc69jvmznzxy"; // predict/queue deployment namespace
