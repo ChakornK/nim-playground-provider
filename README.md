@@ -49,14 +49,21 @@ Add a key with `API_KEY=secret1 bun start` or by creating a `.env` file.
 
 All settings use environment variables. None are required.
 
-| Variable          | Default              | Purpose                                                   |
-| ----------------- | -------------------- | --------------------------------------------------------- |
-| `PORT`            | `8787`               | Listen port                                               |
-| `HOST`            | `127.0.0.1`          | Bind address (localhost by default)                       |
-| `POOL_SIZE`       | `2`                  | Pre-minted hCaptcha tokens to keep warm                   |
-| `LIGHTPANDA_PATH` | (auto-detected)      | Path to the Lightpanda binary, overrides PATH detection   |
-| `MODEL`           | `moonshotai/kimi-k3` | Fallback model name                                       |
-| `API_KEY`         | (unset)              | Comma-separated bearer keys; empty or unset disables auth |
+| Variable                      | Default              | Purpose                                                            |
+| ----------------------------- | -------------------- | ------------------------------------------------------------------ |
+| `PORT`                        | `8787`               | Listen port                                                        |
+| `HOST`                        | `127.0.0.1`          | Bind address (localhost by default)                                |
+| `POOL_SIZE`                   | `1`                  | Pre-minted hCaptcha tokens to keep warm                            |
+| `LIGHTPANDA_PATH`             | (auto-detected)      | Path to the Lightpanda binary, overrides PATH detection            |
+| `MODEL`                       | `moonshotai/kimi-k3` | Fallback model name                                                |
+| `API_KEY`                     | (unset)              | Comma-separated bearer keys; empty or unset disables auth          |
+| `UPSTREAM_CONCURRENCY`        | `1`                  | Maximum simultaneous NVIDIA generations                           |
+| `UPSTREAM_MIN_INTERVAL_MS`    | `15000`              | Minimum delay between NVIDIA request starts                        |
+| `UPSTREAM_BACKOFF_MS`         | `120000`             | Initial cooldown after an upstream failure                         |
+| `UPSTREAM_MAX_BACKOFF_MS`     | `600000`             | Maximum cooldown after repeated upstream failures                  |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | `120000`             | Maximum wait for NVIDIA to begin a response                        |
+| `UPSTREAM_BODY_TIMEOUT_MS`    | `120000`             | Maximum wait for a non-streaming NVIDIA response body              |
+| `UPSTREAM_STREAM_IDLE_TIMEOUT_MS` | `120000`         | Maximum idle time between NVIDIA stream frames                     |
 
 ## Authentication
 

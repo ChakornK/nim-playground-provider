@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
-export const SERVER_VERSION = "1.5.2";
+export const SERVER_VERSION = "1.6.0";
 export const DEFAULT_MODEL = "moonshotai/kimi-k3";
 export const UPSTREAM_BASE = "https://api.ngc.nvidia.com/v2/predict";
 export const NAMESPACE = "qc69jvmznzxy"; // predict/queue deployment namespace
@@ -46,8 +46,33 @@ export function parseKeys(rawValue: string): string[] {
 
 export const env = {
   port: num(process.env.PORT, 8787),
-  poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 2))),
+  poolSize: Math.max(1, Math.trunc(num(process.env.POOL_SIZE, 1))),
   model: process.env.MODEL ?? DEFAULT_MODEL,
   host: process.env.HOST ?? "127.0.0.1",
   apiKeys: parseKeys(process.env.API_KEY ?? ""),
+  upstreamConcurrency: Math.max(
+    1,
+    Math.trunc(num(process.env.UPSTREAM_CONCURRENCY, 1)),
+  ),
+  upstreamMinIntervalMs: Math.max(
+    0,
+    num(process.env.UPSTREAM_MIN_INTERVAL_MS, 15_000),
+  ),
+  upstreamBackoffMs: Math.max(0, num(process.env.UPSTREAM_BACKOFF_MS, 120_000)),
+  upstreamMaxBackoffMs: Math.max(
+    0,
+    num(process.env.UPSTREAM_MAX_BACKOFF_MS, 600_000),
+  ),
+  upstreamHeadersTimeoutMs: Math.max(
+    1_000,
+    num(process.env.UPSTREAM_HEADERS_TIMEOUT_MS, 120_000),
+  ),
+  upstreamBodyTimeoutMs: Math.max(
+    1_000,
+    num(process.env.UPSTREAM_BODY_TIMEOUT_MS, 120_000),
+  ),
+  upstreamStreamIdleTimeoutMs: Math.max(
+    1_000,
+    num(process.env.UPSTREAM_STREAM_IDLE_TIMEOUT_MS, 120_000),
+  ),
 };

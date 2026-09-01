@@ -1,6 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import { Elysia } from "elysia";
 import { env, NAMESPACE } from "./constants.ts";
+import {
+  type RequestLease,
+  RequestScheduler,
+  type RequestStartPermit,
+  SchedulerBackoffError,
+  SchedulerQueueFullError,
+} from "./scheduler.ts";
 import type { TokenPool } from "./token-pool.ts";
 import {
   STREAM_ERROR_FRAME,
@@ -8,7 +15,13 @@ import {
   transformStream,
 } from "./translate.ts";
 import type { CatalogEntry, ChatRequest, ModelRoute } from "./types.ts";
-import type { Upstream } from "./upstream.ts";
+import {
+  readJsonBody,
+  readTextBody,
+  type Upstream,
+  UpstreamBodyTimeoutError,
+  UpstreamHeadersTimeoutError,
+} from "./upstream.ts";
 
 export interface ServerDeps {
   pool: TokenPool;
@@ -26,6 +39,20 @@ export interface ServerDeps {
   defaultRoute?: ModelRoute;
   /** Read per request when set, so a route resolved after startup takes effect. */
   getDefaultRoute?: () => ModelRoute | undefined;
+  /** Maximum generations allowed to occupy NVIDIA concurrently. */
+  upstreamConcurrency?: number;
+  /** Minimum delay between request starts sent to NVIDIA. */
+  upstreamMinIntervalMs?: number;
+  /** Initial delay imposed after NVIDIA overloads or times out. */
+  upstreamBackoffMs?: number;
+  /** Maximum delay after repeated upstream failures. */
+  upstreamMaxBackoffMs?: number;
+  /** Maximum wait for a non-streaming NVIDIA response body. */
+  upstreamBodyTimeoutMs?: number;
+  /** Maximum idle period between NVIDIA stream frames. */
+  upstreamStreamIdleTimeoutMs?: number;
+  /** Maximum number of requests waiting for an NVIDIA concurrency slot. */
+  upstreamMaxQueue?: number;
 }
 
 export interface ServerInstance {
@@ -59,10 +86,10 @@ const SSE_HEADERS = {
   "x-accel-buffering": "no",
 };
 
-const json = (obj: unknown, status: number) =>
+const json = (obj: unknown, status: number, headers?: HeadersInit) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 
 const errorJson = (
@@ -70,7 +97,8 @@ const errorJson = (
   status: number,
   type = "invalid_request_error",
   code = type,
-) => json({ error: { message, type, code } }, status);
+  headers?: HeadersInit,
+) => json({ error: { message, type, code } }, status, headers);
 
 /** Logs an upstream_error and returns its message for the response body. */
 const logUpstreamError = (message: string): string => {
@@ -99,20 +127,31 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
   return ok;
 }
 
-// A rejected token (expired or blocked) yields a captcha-mentioning client
-// error, other statuses pass through. Retry with a fresh token.
+// NVIDIA currently reports rejected hCaptcha credentials as either a captcha
+// error or the generic status description "Token is invalid".
 const isTokenRejection = (status: number, text: string) =>
-  (status === 400 || status === 401 || status === 403) && /captcha/i.test(text);
+  status >= 400 &&
+  status < 600 &&
+  /(?:captcha|\btoken\s+is\s+invalid\b)/i.test(text);
 
-const MAX_TOKEN_RETRIES = 2;
+const MAX_TOKEN_RETRIES = 1;
 
-// The upstream headers timeout aborts the fetch, surfacing as "AbortError:
-// This operation was aborted" — usually a stale captcha token hanging the
-// request rather than a genuine outage.
-const isUpstreamAbort = (e: unknown) =>
-  e instanceof Error && (e.name === "AbortError" || /aborted/i.test(e.message));
+const retryAfterMs = (response: Response): number | null => {
+  const value = response.headers.get("retry-after");
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+};
 
-const STREAM_IDLE_MS = 120_000;
+const isOverloaded = (status: number, text: string): boolean =>
+  status === 429 ||
+  status === 503 ||
+  (status >= 500 &&
+    /(?:rate.?limit|too many requests|service unavailable|overload|capacity)/i.test(
+      text,
+    ));
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
@@ -129,6 +168,36 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   const apiKeys = deps.apiKeys ?? env.apiKeys;
   const staticCatalog = deps.catalog ?? [];
   const getCatalog = deps.getCatalog ?? (() => staticCatalog);
+  const upstreamBackoffMs = deps.upstreamBackoffMs ?? env.upstreamBackoffMs;
+  const upstreamMaxBackoffMs =
+    deps.upstreamMaxBackoffMs ?? env.upstreamMaxBackoffMs;
+  const upstreamBodyTimeoutMs =
+    deps.upstreamBodyTimeoutMs ?? env.upstreamBodyTimeoutMs;
+  const upstreamStreamIdleTimeoutMs =
+    deps.upstreamStreamIdleTimeoutMs ?? env.upstreamStreamIdleTimeoutMs;
+  const scheduler = new RequestScheduler({
+    concurrency: deps.upstreamConcurrency ?? env.upstreamConcurrency,
+    minIntervalMs: deps.upstreamMinIntervalMs ?? env.upstreamMinIntervalMs,
+    maxQueue: deps.upstreamMaxQueue,
+  });
+  let upstreamFailureStreak = 0;
+  const imposeBackoff = (minimumMs = 0): number => {
+    const exponential =
+      upstreamBackoffMs * 2 ** Math.min(10, upstreamFailureStreak);
+    upstreamFailureStreak++;
+    const delay = Math.min(
+      upstreamMaxBackoffMs,
+      Math.max(minimumMs, exponential),
+    );
+    return scheduler.backoff(delay);
+  };
+  const markUpstreamHealthy = () => {
+    upstreamFailureStreak = 0;
+  };
+  const cooldownError = (error: SchedulerBackoffError) =>
+    errorJson(error.message, 429, "rate_limit_error", "upstream_cooldown", {
+      "retry-after": String(Math.max(1, Math.ceil(error.retryAfterMs / 1_000))),
+    });
 
   const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
@@ -216,6 +285,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       ? {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
+          params: entry.params,
         }
       : fallbackRoute;
     if (!route) {
@@ -226,146 +296,306 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       );
     }
 
-    let up: Response | null = null;
-    let lastUpstreamError: { status: number; text: string } | null = null;
-    let lastWasRejection = false;
-    for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
-      let token: string;
-      try {
-        token = await deps.pool.acquire();
-      } catch (e) {
+    let lease: RequestLease;
+    try {
+      lease = await scheduler.acquire(req.signal);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      if (error instanceof SchedulerBackoffError) return cooldownError(error);
+      if (error.name === "AbortError") {
         return errorJson(
-          `captcha solver unavailable: ${(e as Error).message}`,
-          503,
-          "server_error",
+          "request cancelled while waiting for NVIDIA",
+          499,
+          "request_cancelled",
         );
       }
-
-      let res: Response;
-      try {
-        res = await deps.upstream.chat({
-          token,
-          messages: body.messages,
-          model: reqModel,
-          route,
-          temperature: body.temperature,
-          topP: body.top_p,
-          maxTokens: body.max_tokens,
-          enableThinking: body.enable_thinking !== false,
-          stream,
-          tools: body.tools,
-          allowedParams: entry?.params,
-        });
-      } catch (e) {
-        // A hung upstream (headers-timeout abort) usually means the captcha
-        // token went stale: discard it by retrying, which draws a freshly
-        // minted token from the pool's refill.
-        if (isUpstreamAbort(e) && attempt < MAX_TOKEN_RETRIES) {
-          lastUpstreamError = { status: 502, text: (e as Error).message };
-          lastWasRejection = true;
-          console.warn(
-            `[server] upstream aborted (attempt ${attempt + 1}/${MAX_TOKEN_RETRIES + 1}), retrying with a fresh captcha token`,
-          );
-          continue;
-        }
-        return errorJson(
-          logUpstreamError((e as Error).message),
-          502,
-          "upstream_error",
-        );
-      }
-
-      if (res.ok) {
-        up = res;
-        break;
-      }
-      const text = await res.text().catch(() => "");
-      lastUpstreamError = { status: res.status, text };
-      lastWasRejection = isTokenRejection(res.status, text);
-      if (!lastWasRejection) break;
-    }
-
-    if (!up) {
-      const { status, text } = lastUpstreamError ?? { status: 502, text: "" };
-      // Captcha rejections after retries are a provider-side failure.
-      // Other client errors pass through with their status; 5xx collapse.
-      const isClientError = !lastWasRejection && status >= 400 && status < 500;
-      const message = `upstream ${status}: ${text.slice(0, 500)}`;
-      if (!isClientError) logUpstreamError(message);
+      const queueFull = error instanceof SchedulerQueueFullError;
       return errorJson(
-        message,
-        isClientError ? status : 502,
-        isClientError ? "invalid_request_error" : "upstream_error",
+        error.message,
+        queueFull ? 503 : 500,
+        "server_error",
+        queueFull ? "upstream_queue_full" : "internal_error",
       );
     }
 
-    if (!stream) {
-      let completion: Record<string, unknown>;
-      try {
-        completion = (await up.json()) as Record<string, unknown>;
-      } catch {
+    let releaseLease: (() => void) | null = lease.release;
+    try {
+      let up: Response | null = null;
+      let lastUpstreamError: { status: number; text: string } | null = null;
+      let lastWasRejection = false;
+      let lastBackoffMs: number | null = null;
+      for (let attempt = 0; attempt <= MAX_TOKEN_RETRIES; attempt++) {
+        let token: string;
+        while (true) {
+          let startPermit: RequestStartPermit;
+          try {
+            startPermit = await lease.waitForStart(req.signal);
+          } catch (e) {
+            const error = e instanceof Error ? e : new Error(String(e));
+            if (error instanceof SchedulerBackoffError) {
+              return cooldownError(error);
+            }
+            return errorJson(
+              "request cancelled before NVIDIA started",
+              499,
+              "request_cancelled",
+            );
+          }
+
+          try {
+            token = await deps.pool.acquire(req.signal);
+          } catch (e) {
+            startPermit.cancel();
+            const error = e instanceof Error ? e : new Error(String(e));
+            if (error.name === "AbortError") {
+              return errorJson(
+                "request cancelled while waiting for captcha",
+                499,
+                "request_cancelled",
+              );
+            }
+            return errorJson(
+              `captcha solver unavailable: ${error.message}`,
+              503,
+              "server_error",
+            );
+          }
+
+          if (startPermit.markStarted()) break;
+        }
+
+        let res: Response;
+        try {
+          res = await deps.upstream.chat({
+            token,
+            messages: body.messages,
+            model: reqModel,
+            route,
+            temperature: body.temperature,
+            topP: body.top_p,
+            maxTokens: body.max_tokens,
+            enableThinking: body.enable_thinking !== false,
+            stream,
+            tools: body.tools,
+            allowedParams: route.params,
+            signal: req.signal,
+          });
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          if (error instanceof UpstreamHeadersTimeoutError) {
+            const backoff = imposeBackoff();
+            const retrySeconds = Math.ceil(backoff / 1_000);
+            return errorJson(
+              logUpstreamError(error.message),
+              504,
+              "upstream_error",
+              "upstream_timeout",
+              { "retry-after": String(retrySeconds) },
+            );
+          }
+          if (req.signal.aborted || error.name === "AbortError") {
+            return errorJson(
+              req.signal.aborted
+                ? "request cancelled while NVIDIA was running"
+                : logUpstreamError(error.message),
+              req.signal.aborted ? 499 : 502,
+              req.signal.aborted ? "request_cancelled" : "upstream_error",
+            );
+          }
+          return errorJson(
+            logUpstreamError(error.message),
+            502,
+            "upstream_error",
+          );
+        }
+
+        if (res.ok) {
+          up = res;
+          break;
+        }
+        let text: string;
+        try {
+          text = await readTextBody(res, {
+            timeoutMs: upstreamBodyTimeoutMs,
+            signal: req.signal,
+            maxBytes: 1024 * 1024,
+          });
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          if (error instanceof UpstreamBodyTimeoutError) {
+            const backoff = imposeBackoff();
+            return errorJson(
+              logUpstreamError(error.message),
+              504,
+              "upstream_error",
+              "upstream_body_timeout",
+              {
+                "retry-after": String(Math.ceil(backoff / 1_000)),
+              },
+            );
+          }
+          if (req.signal.aborted || error.name === "AbortError") {
+            return errorJson(
+              "request cancelled while reading NVIDIA error",
+              499,
+              "request_cancelled",
+            );
+          }
+          return errorJson(
+            logUpstreamError(error.message),
+            502,
+            "upstream_error",
+            "upstream_error_body_invalid",
+          );
+        }
+        lastUpstreamError = { status: res.status, text };
+        lastWasRejection = isTokenRejection(res.status, text);
+        if (lastWasRejection) {
+          try {
+            await deps.pool.invalidate();
+          } catch (e) {
+            return errorJson(
+              `captcha reset failed: ${(e as Error).message}`,
+              503,
+              "server_error",
+            );
+          }
+          if (attempt < MAX_TOKEN_RETRIES) {
+            console.warn(
+              `[server] NVIDIA rejected a captcha token (attempt ${attempt + 1}/${MAX_TOKEN_RETRIES + 1}); reset browser and retrying once`,
+            );
+            continue;
+          }
+        } else if (isOverloaded(res.status, text)) {
+          lastBackoffMs = imposeBackoff(retryAfterMs(res) ?? 0);
+        } else {
+          markUpstreamHealthy();
+        }
+        break;
+      }
+
+      if (!up) {
+        const { status, text } = lastUpstreamError ?? {
+          status: 502,
+          text: "",
+        };
+        const isClientError =
+          !lastWasRejection && status >= 400 && status < 500;
+        const message = `upstream ${status}: ${text.slice(0, 500)}`;
+        if (!isClientError) logUpstreamError(message);
+        const headers =
+          lastBackoffMs === null
+            ? undefined
+            : {
+                "retry-after": String(Math.ceil(lastBackoffMs / 1_000)),
+              };
         return errorJson(
-          "upstream returned a non-JSON body",
-          502,
-          "upstream_error",
+          message,
+          isClientError ? status : 502,
+          isClientError ? "invalid_request_error" : "upstream_error",
+          isClientError ? "invalid_request_error" : "upstream_error",
+          headers,
         );
       }
-      completion.id = `chatcmpl-${crypto.randomUUID()}`;
-      return json(completion, 200);
-    }
 
-    const upstreamAbort = new AbortController();
-    const meta: StreamMeta = { finishReason: null };
-    // Distinguishes a client disconnect from our own idle-timeout abort: the
-    // latter suggests a hung upstream (stale captcha token), not a gone client.
-    let clientGone = false;
-    const streamOut = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        const enc = new TextEncoder();
-        // Aborts the upstream body when no frame arrives for a while.
-        const idle = setTimeout(() => upstreamAbort.abort(), STREAM_IDLE_MS);
-        idle.unref();
+      if (!stream) {
+        let completion: Record<string, unknown>;
         try {
-          for await (const frame of transformStream(
-            up.body as ReadableStream<Uint8Array>,
-            upstreamAbort.signal,
-            meta,
-          )) {
-            idle.refresh();
-            controller.enqueue(enc.encode(frame));
+          completion = (await readJsonBody(up, {
+            timeoutMs: upstreamBodyTimeoutMs,
+            signal: req.signal,
+          })) as Record<string, unknown>;
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          if (error instanceof UpstreamBodyTimeoutError) {
+            const backoff = imposeBackoff();
+            return errorJson(
+              logUpstreamError(error.message),
+              504,
+              "upstream_error",
+              "upstream_body_timeout",
+              {
+                "retry-after": String(Math.ceil(backoff / 1_000)),
+              },
+            );
           }
-        } catch {
-          // upstream dropped mid-stream; the generator throws out of the loop
-          // so it never emitted its error frame — send one here so clients
-          // surface a coded error instead of a bare "terminated".
-          if (!clientGone) {
+          if (req.signal.aborted || error.name === "AbortError") {
+            return errorJson(
+              "request cancelled while reading NVIDIA response",
+              499,
+              "request_cancelled",
+            );
+          }
+          return errorJson(
+            "upstream returned a non-JSON body",
+            502,
+            "upstream_error",
+          );
+        }
+        markUpstreamHealthy();
+        completion.id = `chatcmpl-${crypto.randomUUID()}`;
+        return json(completion, 200);
+      }
+
+      const upstreamAbort = new AbortController();
+      const meta: StreamMeta = { finishReason: null };
+      let clientGone = false;
+      const releaseStreamLease = releaseLease;
+      releaseLease = null;
+      const streamOut = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const enc = new TextEncoder();
+          let idleTimedOut = false;
+          let errorSent = false;
+          const sendStreamError = () => {
+            if (clientGone || errorSent) return;
+            errorSent = true;
             try {
               controller.enqueue(enc.encode(STREAM_ERROR_FRAME));
             } catch {}
-          }
-        } finally {
-          clearTimeout(idle);
-          // A stream that ended (or errored) without a finish_reason means
-          // upstream cut it short — usually a stale captcha token. Refresh
-          // the pool so the next request mints fresh tokens.
-          if (!meta.finishReason && !clientGone) {
-            console.warn(
-              "[server] stream ended without finish_reason; refreshing captcha token pool",
-            );
-            deps.pool.invalidate();
-          }
+          };
+          const idle = setTimeout(() => {
+            idleTimedOut = true;
+            upstreamAbort.abort();
+          }, upstreamStreamIdleTimeoutMs);
+          idle.unref();
           try {
-            controller.close();
-          } catch {}
-        }
-      },
-      // Client disconnect lands here; tears down the upstream fetch.
-      cancel() {
-        clientGone = true;
-        upstreamAbort.abort();
-      },
-    });
-    return new Response(streamOut, { status: 200, headers: SSE_HEADERS });
+            for await (const frame of transformStream(
+              up.body as ReadableStream<Uint8Array>,
+              upstreamAbort.signal,
+              meta,
+            )) {
+              idle.refresh();
+              controller.enqueue(enc.encode(frame));
+            }
+            if (idleTimedOut && !meta.finishReason) sendStreamError();
+          } catch {
+            sendStreamError();
+          } finally {
+            clearTimeout(idle);
+            if (!meta.finishReason && !clientGone) {
+              imposeBackoff();
+              console.warn(
+                "[server] stream ended without finish_reason; backing off NVIDIA requests",
+              );
+            } else if (meta.finishReason) {
+              markUpstreamHealthy();
+            }
+            releaseStreamLease();
+            try {
+              controller.close();
+            } catch {}
+          }
+        },
+        cancel() {
+          clientGone = true;
+          upstreamAbort.abort();
+        },
+      });
+      return new Response(streamOut, { status: 200, headers: SSE_HEADERS });
+    } finally {
+      releaseLease?.();
+    }
   };
 
   const port = deps.port ?? env.port;

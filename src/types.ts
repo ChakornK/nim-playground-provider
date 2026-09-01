@@ -24,6 +24,8 @@ export interface CatalogEntry {
 export interface ModelRoute {
   modelId: string;
   functionId: string;
+  /** Params accepted by the deployed model, when its spec is available. */
+  params?: string[];
 }
 
 export interface ChatRequest {
@@ -89,4 +91,6 @@ export interface UpstreamChatParams {
   route: { modelId: string; functionId: string };
   /** Params the model accepts; unsupported ones are dropped before sending. */
   allowedParams?: string[];
+  /** Cancels the upstream request when the downstream client disconnects. */
+  signal?: AbortSignal;
 }

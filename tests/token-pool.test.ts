@@ -80,6 +80,21 @@ test("acquire times out when the pool stays cold", async () => {
   await expect(pool.acquire()).rejects.toThrow("timed out");
 });
 
+test("aborted acquire leaves the cold token queue", async () => {
+  const src: TokenSource = {
+    async mintToken() {
+      return new Promise<string>(() => {});
+    },
+  };
+  const pool = new TokenPool(src, 1, { acquireTimeoutMs: 1_000 });
+  const controller = new AbortController();
+  const pending = pool.acquire(controller.signal);
+  controller.abort();
+
+  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  pool.close();
+});
+
 test("acquire rejects beyond the waiter cap", async () => {
   const src: TokenSource = {
     async mintToken() {
@@ -196,4 +211,52 @@ test("persistent mint failure rejects all waiters after retries exhausted", asyn
   expect(e1).toBe("captcha down");
   expect(e2).toBe("captcha down");
   expect(attempts).toBeGreaterThanOrEqual(2);
+});
+
+test("invalidate cancels a stuck mint and serves a fresh generation", async () => {
+  let calls = 0;
+  let resets = 0;
+  let rejectFirst: ((error: Error) => void) | undefined;
+  const firstMint = new Promise<string>((_resolve, reject) => {
+    rejectFirst = reject;
+  });
+  const src: TokenSource = {
+    async mintToken() {
+      calls++;
+      if (calls === 1) return firstMint;
+      return "P1_fresh";
+    },
+    async reset() {
+      resets++;
+      rejectFirst?.(new Error("mint cancelled by reset"));
+    },
+  };
+  const pool = new TokenPool(src, 1);
+
+  pool.prewarm();
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  await pool.invalidate();
+
+  expect(await pool.acquire()).toBe("P1_fresh");
+  expect(resets).toBe(1);
+});
+
+test("close rejects new acquires and stops background retries", async () => {
+  let attempts = 0;
+  const src: TokenSource = {
+    async mintToken() {
+      attempts++;
+      throw new Error("captcha down");
+    },
+  };
+  const pool = new TokenPool(src, 1, { prewarmRetryMs: 5 });
+
+  pool.prewarm();
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  pool.close();
+  const atClose = attempts;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  await expect(pool.acquire()).rejects.toThrow("token pool is closed");
+  expect(attempts).toBe(atClose);
 });

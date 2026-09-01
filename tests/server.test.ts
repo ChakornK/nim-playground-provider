@@ -11,7 +11,7 @@ import {
 } from "../src/server.ts";
 import type { TokenPool } from "../src/token-pool.ts";
 import type { CatalogEntry, UpstreamChatParams } from "../src/types.ts";
-import type { Upstream } from "../src/upstream.ts";
+import { Upstream, UpstreamHeadersTimeoutError } from "../src/upstream.ts";
 
 const fixture = () =>
   readFileSync(join(import.meta.dir, "fixtures", "upstream.sse"), "utf8");
@@ -69,6 +69,9 @@ const deps: ServerDeps = {
     modelId: "test-namespace/default-model",
     functionId: "default-fid",
   },
+  upstreamConcurrency: 1,
+  upstreamMinIntervalMs: 0,
+  upstreamBackoffMs: 0,
 };
 
 let server: ServerInstance;
@@ -174,6 +177,48 @@ test("no route available returns 503 without consuming a token", async () => {
   }
 });
 
+test("fallback route constraints filter explicit Kimi sampling params", async () => {
+  let upstreamBody: Record<string, unknown> | undefined;
+  const upstream = new Upstream({
+    fetchImpl: (async (_url, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return upstreamMock().chat({
+        token: "P1_unused",
+        messages: [],
+        model: "moonshotai/kimi-k3",
+        route: { modelId: "namespace/kimi-k3", functionId: "function-id" },
+        enableThinking: false,
+        stream: false,
+      });
+    }) as typeof fetch,
+  });
+  const s = await createServer({
+    ...deps,
+    catalog: [],
+    model: "moonshotai/kimi-k3",
+    defaultRoute: {
+      modelId: "namespace/kimi-k3",
+      functionId: "function-id",
+      params: ["messages", "model", "stream", "max_tokens"],
+    },
+    upstream,
+  });
+  try {
+    const r = await fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hi" }],
+        top_p: 1,
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(upstreamBody).not.toHaveProperty("top_p");
+  } finally {
+    await s.stop(true);
+  }
+});
+
 test("upstream throw maps to 502 upstream_error", async () => {
   const s = await createServer({
     ...deps,
@@ -193,6 +238,203 @@ test("upstream throw maps to 502 upstream_error", async () => {
     expect(r.status).toBe(502);
     const body = await r.json();
     expect(body.error.type).toBe("upstream_error");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("upstream headers timeout returns 504 without retry amplification", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstreamBackoffMs: 2_000,
+    upstream: {
+      async chat() {
+        calls++;
+        throw new UpstreamHeadersTimeoutError(120_000);
+      },
+    } as unknown as Upstream,
+  });
+  const base2 = `http://localhost:${s.port}`;
+  try {
+    const r = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(504);
+    expect(r.headers.get("retry-after")).toBe("2");
+    const body = await r.json();
+    expect(body.error.code).toBe("upstream_timeout");
+
+    const cooldown = await fetch(`${base2}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(cooldown.status).toBe(429);
+    expect((await cooldown.json()).error.code).toBe("upstream_cooldown");
+    expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("stalled non-stream body times out, cancels, and releases its lease", async () => {
+  let calls = 0;
+  let cancelled = false;
+  const s = await createServer({
+    ...deps,
+    upstreamBodyTimeoutMs: 15,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return upstreamMock().chat(params);
+      },
+    } as unknown as Upstream,
+  });
+  const post = () =>
+    fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+  try {
+    const stalled = await post();
+    expect(stalled.status).toBe(504);
+    expect((await stalled.json()).error.code).toBe("upstream_body_timeout");
+    expect(cancelled).toBe(true);
+    expect((await post()).status).toBe(200);
+    expect(calls).toBe(2);
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("stalled upstream error body cannot pin the scheduler lease", async () => {
+  let calls = 0;
+  let cancelled = false;
+  const s = await createServer({
+    ...deps,
+    upstreamBodyTimeoutMs: 15,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+                return new Promise<void>(() => {});
+              },
+            }),
+            { status: 503 },
+          );
+        }
+        return upstreamMock().chat(params);
+      },
+    } as unknown as Upstream,
+  });
+  const post = () =>
+    fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+  try {
+    const stalled = await post();
+    expect(stalled.status).toBe(504);
+    expect(cancelled).toBe(true);
+    expect((await post()).status).toBe(200);
+    expect(calls).toBe(2);
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("scheduler holds a second request until the first completion ends", async () => {
+  let calls = 0;
+  let releaseFirst: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const s = await createServer({
+    ...deps,
+    upstreamConcurrency: 1,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) await firstGate;
+        return upstreamMock().chat(params);
+      },
+    } as unknown as Upstream,
+  });
+  const post = () =>
+    fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+  try {
+    const first = post();
+    const second = post();
+    while (calls === 0) await Bun.sleep(1);
+    await Bun.sleep(10);
+    expect(calls).toBe(1);
+    releaseFirst?.();
+    const responses = await Promise.all([first, second]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(calls).toBe(2);
+  } finally {
+    releaseFirst?.();
+    await s.stop(true);
+  }
+});
+
+test("pacing is measured at actual upstream starts after token minting", async () => {
+  let tokenCalls = 0;
+  const starts: number[] = [];
+  const s = await createServer({
+    ...deps,
+    upstreamConcurrency: 2,
+    upstreamMinIntervalMs: 40,
+    pool: {
+      async acquire() {
+        const call = ++tokenCalls;
+        if (call === 1) await Bun.sleep(45);
+        return `P1_token_${call}`;
+      },
+    } as unknown as TokenPool,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        starts.push(Date.now());
+        return upstreamMock().chat(params);
+      },
+    } as unknown as Upstream,
+  });
+  const post = () =>
+    fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+  try {
+    const responses = await Promise.all([post(), post()]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(starts).toHaveLength(2);
+    expect(
+      Math.abs((starts[1] ?? 0) - (starts[0] ?? 0)),
+    ).toBeGreaterThanOrEqual(35);
   } finally {
     await s.stop(true);
   }
@@ -247,17 +489,21 @@ test("mint failure maps to 503 server_error", async () => {
   }
 });
 
-test("expired captcha token retries with a fresh token", async () => {
+test("Kimi token rejection resets the captcha session before retrying", async () => {
   let calls = 0;
+  let tokens = 0;
+  let invalidations = 0;
   const s = await createServer({
     ...deps,
+    model: "moonshotai/kimi-k3",
     upstream: {
       async chat(params: UpstreamChatParams) {
         calls++;
         if (calls === 1) {
-          return new Response('{"error":"Invalid captcha token"}', {
-            status: 400,
-          });
+          return new Response(
+            '{"requestStatus":{"statusCode":"INVALID_REQUEST","statusDescription":"Token is invalid"}}',
+            { status: 400 },
+          );
         }
         lastParams = params;
         return new Response(
@@ -265,7 +511,7 @@ test("expired captcha token retries with a fresh token", async () => {
             id: "chatcmpl-retry",
             object: "chat.completion",
             created: 1,
-            model: "publisher1/model1",
+            model: "moonshotai/kimi-k3",
             choices: [
               {
                 index: 0,
@@ -281,7 +527,11 @@ test("expired captcha token retries with a fresh token", async () => {
     } as unknown as Upstream,
     pool: {
       async acquire() {
-        return "P1_retry_token";
+        tokens++;
+        return `P1_retry_token_${tokens}`;
+      },
+      async invalidate() {
+        invalidations++;
       },
     } as unknown as TokenPool,
   });
@@ -297,7 +547,45 @@ test("expired captcha token retries with a fresh token", async () => {
     });
     expect(r.status).toBe(200);
     expect(calls).toBe(2);
-    expect(lastParams?.token).toBe("P1_retry_token");
+    expect(tokens).toBe(2);
+    expect(invalidations).toBe(1);
+    expect(lastParams?.token).toBe("P1_retry_token_2");
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("invalid token count is a client error, not a captcha rejection", async () => {
+  let calls = 0;
+  let invalidations = 0;
+  const s = await createServer({
+    ...deps,
+    upstream: {
+      async chat() {
+        calls++;
+        return new Response("invalid token count for this request", {
+          status: 400,
+        });
+      },
+    } as unknown as Upstream,
+    pool: {
+      async acquire() {
+        return "P1_valid";
+      },
+      async invalidate() {
+        invalidations++;
+      },
+    } as unknown as TokenPool,
+  });
+  try {
+    const r = await fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(r.status).toBe(400);
+    expect(calls).toBe(1);
+    expect(invalidations).toBe(0);
   } finally {
     await s.stop(true);
   }
@@ -351,6 +639,40 @@ test("non-captcha upstream errors are not retried", async () => {
     });
     expect(r.status).toBe(429);
     expect(calls).toBe(1);
+  } finally {
+    await s.stop(true);
+  }
+});
+
+test("400 capacity validation does not globally back off requests", async () => {
+  let calls = 0;
+  const s = await createServer({
+    ...deps,
+    upstreamBackoffMs: 500,
+    upstream: {
+      async chat(params: UpstreamChatParams) {
+        calls++;
+        if (calls === 1) {
+          return new Response("requested token count exceeds model capacity", {
+            status: 400,
+          });
+        }
+        return upstreamMock().chat(params);
+      },
+    } as unknown as Upstream,
+  });
+  const post = () =>
+    fetch(`http://localhost:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+  try {
+    expect((await post()).status).toBe(400);
+    const second = post();
+    const quick = await Promise.race([second, Bun.sleep(250).then(() => null)]);
+    expect(quick?.status).toBe(200);
+    if (!quick) await second;
   } finally {
     await s.stop(true);
   }
@@ -933,28 +1255,12 @@ describe("bearer key auth", () => {
   });
 });
 
-describe("upstream abort retry", () => {
-  const abortingUpstream = (failures: number) => {
+describe("upstream abort handling", () => {
+  const abortDeps = () => {
     let calls = 0;
-    return {
-      calls: () => calls,
-      upstream: {
-        async chat(params: UpstreamChatParams) {
-          calls++;
-          if (calls <= failures) {
-            throw new DOMException("This operation was aborted", "AbortError");
-          }
-          return upstreamMock().chat(params);
-        },
-      } as unknown as Upstream,
-    };
-  };
-
-  const abortDeps = (failures: number) => {
-    const u = abortingUpstream(failures);
     let tokens = 0;
     return {
-      calls: u.calls,
+      calls: () => calls,
       tokens: () => tokens,
       deps: {
         ...deps,
@@ -964,7 +1270,12 @@ describe("upstream abort retry", () => {
             return `P1_token_${tokens}`;
           },
         } as unknown as TokenPool,
-        upstream: u.upstream,
+        upstream: {
+          async chat() {
+            calls++;
+            throw new DOMException("This operation was aborted", "AbortError");
+          },
+        } as unknown as Upstream,
       } satisfies ServerDeps,
     };
   };
@@ -979,37 +1290,24 @@ describe("upstream abort retry", () => {
       }),
     });
 
-  test("aborted upstream retries with a fresh captcha token", async () => {
-    const h = abortDeps(1);
-    const s = await createServer(h.deps);
-    try {
-      const r = await post(`http://localhost:${s.port}`);
-      expect(r.status).toBe(200);
-      expect(h.calls()).toBe(2);
-      expect(h.tokens()).toBe(2);
-    } finally {
-      await s.stop(true);
-    }
-  });
-
-  test("persistent aborts exhaust retries and return 502", async () => {
-    const h = abortDeps(10);
+  test("an upstream abort is not amplified into duplicate requests", async () => {
+    const h = abortDeps();
     const s = await createServer(h.deps);
     try {
       const r = await post(`http://localhost:${s.port}`);
       expect(r.status).toBe(502);
       const body = await r.json();
       expect(body.error.type).toBe("upstream_error");
-      expect(body.error.message).toContain("This operation was aborted");
-      expect(h.calls()).toBe(3);
-      expect(h.tokens()).toBe(3);
+      expect(body.error.message).toContain("aborted");
+      expect(h.calls()).toBe(1);
+      expect(h.tokens()).toBe(1);
     } finally {
       await s.stop(true);
     }
   });
 
-  test("non-abort upstream throw does not retry", async () => {
-    const h = abortDeps(0);
+  test("a connection reset is not retried", async () => {
+    const h = abortDeps();
     const failing = {
       async chat() {
         throw new Error("connection reset");
@@ -1026,7 +1324,7 @@ describe("upstream abort retry", () => {
   });
 });
 
-describe("stream without finish_reason refreshes the captcha pool", () => {
+describe("stream without finish_reason preserves unrelated warm tokens", () => {
   const truncatedSSE =
     'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n';
   const healthySSE =
@@ -1068,7 +1366,7 @@ describe("stream without finish_reason refreshes the captcha pool", () => {
     return { status: r.status, body: await r.text() };
   };
 
-  test("truncated stream invalidates warm tokens", async () => {
+  test("truncated stream reports an error without burning warm tokens", async () => {
     let invalidations = 0;
     const s = await createServer(
       streamingDeps(truncatedSSE, () => invalidations++),
@@ -1078,7 +1376,54 @@ describe("stream without finish_reason refreshes the captcha pool", () => {
       expect(status).toBe(200);
       expect(body).toContain('"code":"stream_incomplete"');
       expect(body).not.toContain("data: [DONE]");
-      expect(invalidations).toBe(1);
+      expect(invalidations).toBe(0);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("idle stream emits an error and releases its scheduler lease", async () => {
+    let calls = 0;
+    let cancelled = false;
+    const upstream = {
+      async chat() {
+        calls++;
+        if (calls === 1) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+                return new Promise<void>(() => {});
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return new Response(healthySSE, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    } as unknown as Upstream;
+    const pool = {
+      async acquire() {
+        return "P1_stream_token";
+      },
+      async invalidate() {},
+    } as unknown as TokenPool;
+    const s = await createServer({
+      ...deps,
+      upstream,
+      pool,
+      upstreamStreamIdleTimeoutMs: 15,
+    });
+    try {
+      const stalled = await postStream(s);
+      expect(stalled.status).toBe(200);
+      expect(stalled.body).toContain('"code":"stream_incomplete"');
+      expect(cancelled).toBe(true);
+      const healthy = await postStream(s);
+      expect(healthy.body).toContain("data: [DONE]");
+      expect(calls).toBe(2);
     } finally {
       await s.stop(true);
     }

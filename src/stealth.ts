@@ -41,6 +41,7 @@ const STRIP_HEADERS = new Set([
 
 const CA_LIFETIME_DAYS = "3650";
 const CERT_LIFETIME_DAYS = "825";
+const OPENSSL_TIMEOUT_MS = 10_000;
 
 /** fetch() returns decoded response bytes while retaining the upstream
  * Content-Encoding header. Strip representation/framing lengths before
@@ -79,6 +80,7 @@ export class StealthProxy {
   private caKeyPath: string;
   private certs = new Map<string, Promise<CertPair>>();
   private server: net.Server | null = null;
+  private sockets = new Set<net.Socket>();
   // http.Server requests are fed CONNECted TLS sockets.
   private inner: http.Server;
 
@@ -107,26 +109,34 @@ export class StealthProxy {
   async start(): Promise<{ proxyUrl: string; caCertPath: string }> {
     mkdirSync(this.dir, { recursive: true });
     if (!existsSync(this.caCertPath) || !existsSync(this.caKeyPath)) {
-      await execFileAsync("openssl", [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        this.caKeyPath,
-        "-out",
-        this.caCertPath,
-        "-days",
-        CA_LIFETIME_DAYS,
-        "-nodes",
-        "-subj",
-        "/CN=nim-stealth-proxy",
-      ]);
+      await execFileAsync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-keyout",
+          this.caKeyPath,
+          "-out",
+          this.caCertPath,
+          "-days",
+          CA_LIFETIME_DAYS,
+          "-nodes",
+          "-subj",
+          "/CN=nim-stealth-proxy",
+        ],
+        {
+          timeout: OPENSSL_TIMEOUT_MS,
+        },
+      );
       // CA key readable by the in-process TLS wrapper only.
     }
-    this.server = net.createServer((socket) =>
-      this.inner.emit("connection", socket),
-    );
+    this.server = net.createServer((socket) => {
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+      this.inner.emit("connection", socket);
+    });
     this.inner.on(
       "connect",
       (req, socket, head) =>
@@ -146,9 +156,14 @@ export class StealthProxy {
   }
 
   async stop(): Promise<void> {
-    const s = this.server;
+    const server = this.server;
     this.server = null;
-    if (s) await new Promise<void>((r) => s.close(() => r()));
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+    this.inner.closeAllConnections();
+    if (server?.listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
 
   /** Terminate TLS with a host-matching cert, then run the inner HTTP parser. */
@@ -170,6 +185,8 @@ export class StealthProxy {
       cert,
       requestCert: false,
     });
+    this.sockets.add(secure);
+    secure.once("close", () => this.sockets.delete(secure));
     if (head?.length) secure.unshift(head);
     // Keep both ends honest; without a timeout an idle TLS wrapper pins a
     // lightpanda slot forever.
@@ -195,36 +212,48 @@ export class StealthProxy {
     const certPath = join(this.dir, `${slug}.crt`);
     const sanPath = join(this.dir, `${slug}.san.cnf`);
     writeFileSync(sanPath, `subjectAltName=DNS:${host}\n`);
-    await execFileAsync("openssl", [
-      "req",
-      "-newkey",
-      "rsa:2048",
-      "-keyout",
-      keyPath,
-      "-out",
-      csrPath,
-      "-nodes",
-      "-subj",
-      "/CN=localhost",
-    ]);
-    await execFileAsync("openssl", [
-      "x509",
-      "-req",
-      "-in",
-      csrPath,
-      "-CA",
-      this.caCertPath,
-      "-CAkey",
-      this.caKeyPath,
-      "-CAcreateserial",
-      "-out",
-      certPath,
-      "-days",
-      CERT_LIFETIME_DAYS,
-      "-sha256",
-      "-extfile",
-      sanPath,
-    ]);
+    await execFileAsync(
+      "openssl",
+      [
+        "req",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        keyPath,
+        "-out",
+        csrPath,
+        "-nodes",
+        "-subj",
+        "/CN=localhost",
+      ],
+      {
+        timeout: OPENSSL_TIMEOUT_MS,
+      },
+    );
+    await execFileAsync(
+      "openssl",
+      [
+        "x509",
+        "-req",
+        "-in",
+        csrPath,
+        "-CA",
+        this.caCertPath,
+        "-CAkey",
+        this.caKeyPath,
+        "-CAcreateserial",
+        "-out",
+        certPath,
+        "-days",
+        CERT_LIFETIME_DAYS,
+        "-sha256",
+        "-extfile",
+        sanPath,
+      ],
+      {
+        timeout: OPENSSL_TIMEOUT_MS,
+      },
+    );
     return {
       key: readFileSync(keyPath, "utf8"),
       cert: readFileSync(certPath, "utf8"),

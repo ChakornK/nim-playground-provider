@@ -28,9 +28,9 @@ const collect = async <T>(it: AsyncGenerator<T>) => {
   return out;
 };
 
-test("body builder matches captured upstream shape (stream=true)", () => {
+test("body builder leaves omitted sampling params to model defaults", () => {
   const body = buildUpstreamBody({
-    model: "publisher1/model1",
+    model: "moonshotai/kimi-k3",
     messages: [{ role: "user", content: "hi" }],
     enableThinking: true,
     stream: true,
@@ -38,13 +38,13 @@ test("body builder matches captured upstream shape (stream=true)", () => {
   expect(body).toEqual({
     stream: true,
     chat_template_kwargs: { enable_thinking: true, clear_thinking: false },
-    model: "publisher1/model1",
-    temperature: 1,
-    top_p: 1,
-    max_tokens: 16384,
+    model: "moonshotai/kimi-k3",
     messages: [{ role: "user", content: "hi" }],
     stream_options: { include_usage: true, continuous_usage_stats: true },
   });
+  expect(body).not.toHaveProperty("temperature");
+  expect(body).not.toHaveProperty("top_p");
+  expect(body).not.toHaveProperty("max_tokens");
 });
 
 test("body builder omits stream_options when stream=false", () => {
@@ -53,14 +53,17 @@ test("body builder omits stream_options when stream=false", () => {
     messages: [{ role: "user", content: "hi" }],
     enableThinking: false,
     stream: false,
+    temperature: 0.7,
+    topP: 0.9,
+    maxTokens: 512,
   });
   expect(body).toEqual({
     stream: false,
     chat_template_kwargs: { enable_thinking: false, clear_thinking: false },
     model: "publisher1/model1",
-    temperature: 1,
-    top_p: 1,
-    max_tokens: 16384,
+    temperature: 0.7,
+    top_p: 0.9,
+    max_tokens: 512,
     messages: [{ role: "user", content: "hi" }],
   });
   expect(body).not.toHaveProperty("stream_options");
@@ -121,6 +124,24 @@ test("parseSSE yields each data line, ignores blank lines and CRLF", async () =>
   const raw = "data: a\r\ndata: b\n\n\n\ndata: c";
   const lines = await collect(parseSSE(streamOf(raw)));
   expect(lines).toEqual(["a", "b", "c"]);
+});
+
+test("parseSSE abort does not await a stuck cancel hook", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled = true;
+      return new Promise<void>(() => {});
+    },
+  });
+  const controller = new AbortController();
+  const pending = collect(parseSSE(stream, controller.signal));
+  await Bun.sleep(1);
+  controller.abort();
+  const result = await Promise.race([pending, Bun.sleep(50).then(() => null)]);
+
+  expect(result).toEqual([]);
+  expect(cancelled).toBe(true);
 });
 
 test("transformStream emits a coded error frame when the stream ends without finish_reason", async () => {

@@ -23,7 +23,7 @@ COPY --from=build /app/package.json ./
 
 ENV PORT=8787
 ENV HOST=0.0.0.0
-ENV POOL_SIZE=2
+ENV POOL_SIZE=1
 ENV LIGHTPANDA_PATH=/usr/bin/lightpanda
 ENV MODEL=moonshotai/kimi-k3
 

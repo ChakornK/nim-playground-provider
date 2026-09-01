@@ -3,8 +3,8 @@ import type { CatalogEntry, ModelRoute } from "./types.ts";
 
 export type { CatalogEntry, ModelRoute };
 
-// ponytail: first page only; the free-chat list fits in 1000 entries today.
-// Follow the next-page cursor if models ever silently vanish from /v1/models.
+// Fetches the first page only. Follow the next-page cursor if free-chat
+// models ever exceed the requested page size and vanish from /v1/models.
 export const ENDPOINTS_URL =
   "https://api.ngc.nvidia.com/v2/endpoints?page-size=1000";
 const ENDPOINTS_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
@@ -64,7 +64,7 @@ export function specParams(openAPISpec?: string): string[] | undefined {
     );
     let schema = path?.[1].post?.requestBody?.content?.["application/json"]
       ?.schema as Record<string, unknown> | undefined;
-    // ponytail: one $ref hop covers every spec seen so far
+    // Resolves one local $ref hop; nested or external references stay unknown.
     const ref = schema?.$ref;
     if (typeof ref === "string" && ref.startsWith("#/components/schemas/")) {
       schema = doc.components?.schemas?.[ref.split("/").pop() ?? ""] as
@@ -179,6 +179,7 @@ export async function resolveModelRoute(
     return {
       modelId: `${spec.namespace}/${artifact.name}`,
       functionId: spec.functionId,
+      ...(spec.params ? { params: spec.params } : {}),
     };
   } catch {
     return null;

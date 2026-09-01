@@ -38,8 +38,10 @@ export async function* parseSSE(
     }
   } finally {
     signal?.removeEventListener("abort", onAbort);
-    // Cancels the underlying stream when the consumer stops early.
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    // Cleanup is best-effort so a broken cancel hook cannot pin the consumer.
+    void reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {}
   }
 }

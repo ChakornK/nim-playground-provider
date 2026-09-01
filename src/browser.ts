@@ -121,13 +121,44 @@ export async function withTimeout<T>(
   }
 }
 
+export async function withAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  message: string,
+): Promise<T> {
+  if (signal.aborted) {
+    const error = new Error(message);
+    error.name = "AbortError";
+    throw error;
+  }
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        onAbort = () => {
+          const error = new Error(message);
+          error.name = "AbortError";
+          reject(error);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export class BrowserSession {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private proc: ChildProcess | null = null;
   private stealth: StealthProxy | null = null;
   private minting: Promise<string> | null = null;
+  private starting: Promise<void> | null = null;
+  private resetController = new AbortController();
   private mintGen = 0;
+  private readyGen = -1;
   private sitekey = HCAPTCHA_SITEKEY_FALLBACK;
   private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
   // Persistent invisible widget, reused via reset+execute to avoid per-mint leakage
@@ -142,70 +173,120 @@ export class BrowserSession {
    * never overlap on the shared widget. */
   async mintToken(): Promise<string> {
     const prev: Promise<unknown> = this.minting ?? Promise.resolve();
+    const resetSignal = this.resetController.signal;
     const minting = prev
       .catch(() => {})
       .then(() =>
         withTimeout(
-          this.mintWithRetry(),
+          withAbort(this.mintWithRetry(), resetSignal, "hcaptcha mint reset"),
           MINT_TIMEOUT_MS,
           "hcaptcha mint timed out",
         ),
       )
       .catch(async (e) => {
-        // Persistent failure, close browser so next mint starts clean. Bumping
-        // the generation stops the retry loop orphaned by the timeout.
-        this.mintGen++;
-        await this.close();
+        const resetAbort =
+          e instanceof Error &&
+          (e.message === "hcaptcha mint reset" ||
+            e.message === "mint superseded");
+        if (!resetAbort) await this.reset();
         throw e;
       });
     this.minting = minting;
     return minting;
   }
 
+  /** Reset the browser and widget after NVIDIA rejects a token. */
+  async reset(): Promise<void> {
+    const resetController = this.resetController;
+    this.resetController = new AbortController();
+    this.mintGen++;
+    this.readyGen = -1;
+    this.starting = null;
+    resetController.abort();
+    const browser = this.browser;
+    const proc = this.proc;
+    const stealth = this.stealth;
+    this.browser = null;
+    this.page = null;
+    this.widgetId = null;
+    this.proc = null;
+    this.stealth = null;
+
+    proc?.kill();
+    await Promise.allSettled([
+      browser
+        ? withTimeout(browser.close(), 2_000, "browser close timed out")
+        : Promise.resolve(),
+      stealth
+        ? withTimeout(stealth.stop(), 2_000, "stealth proxy stop timed out")
+        : Promise.resolve(),
+    ]);
+    if (proc?.exitCode === null) proc.kill("SIGKILL");
+  }
+
   async close(): Promise<void> {
-    try {
-      await this.browser?.close();
-    } finally {
-      this.browser = null;
-      this.page = null;
-      this.widgetId = null;
-      this.proc?.kill();
-      this.proc = null;
-      const stealth = this.stealth;
-      this.stealth = null;
-      await stealth?.stop();
-    }
+    await this.reset();
+  }
+
+  private assertCurrent(gen: number): void {
+    if (this.mintGen !== gen) throw new Error("mint superseded");
   }
 
   private async mintWithRetry(): Promise<string> {
     const gen = this.mintGen;
     let lastError: unknown;
     for (let attempt = 0; attempt < MINT_ATTEMPTS; attempt++) {
-      // A timed-out mint's chain has moved on; don't respawn the browser.
-      if (this.mintGen !== gen) throw new Error("mint superseded");
+      this.assertCurrent(gen);
       try {
-        return await this.mintTokenInner();
+        return await this.mintTokenInner(gen);
       } catch (err) {
         lastError = err;
+        this.assertCurrent(gen);
+        if (attempt + 1 < MINT_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 500 * 2 ** attempt),
+          );
+        }
       }
     }
     throw lastError;
   }
 
-  private async ensureBrowser() {
-    if (this.browser) return;
+  private async ensureBrowser(gen: number): Promise<void> {
+    if (this.readyGen === gen && this.browser && this.page && this.widgetId) {
+      return;
+    }
+    let starting = this.starting;
+    if (!starting) {
+      starting = this.startBrowser(gen);
+      this.starting = starting;
+      const clear = () => {
+        if (this.starting === starting) this.starting = null;
+      };
+      starting.then(clear, clear);
+    }
+    await starting;
+    this.assertCurrent(gen);
+    if (!this.browser || !this.page || !this.widgetId) {
+      throw new Error("browser session did not initialize");
+    }
+  }
+
+  private async startBrowser(gen: number): Promise<void> {
+    this.assertCurrent(gen);
     debugCaptcha("starting browser");
     const exe = this.opts.lightpandaPath;
     if (!exe) throw new Error("LIGHTPANDA_PATH not set");
 
     const cdpPort = await new Promise<number>((resolve, reject) => {
-      const s = createServer();
-      s.on("error", reject);
-      s.listen(0, "127.0.0.1", () => {
-        const port = (s.address() as AddressInfo).port;
-        s.close(() => resolve(port));
+      const server = createServer();
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const port = (server.address() as AddressInfo).port;
+        server.close(() => resolve(port));
       });
     });
+    this.assertCurrent(gen);
 
     // Route lightpanda through a header-rewriting MITM proxy so the network
     // fingerprint matches commercial Chrome (its own UA override refuses
@@ -215,15 +296,29 @@ export class BrowserSession {
     try {
       stealth = new StealthProxy();
       debugCaptcha("starting stealth proxy");
-      const { proxyUrl, caCertPath } = await stealth.start();
+      const { proxyUrl, caCertPath } = await withTimeout(
+        stealth.start(),
+        15_000,
+        "stealth proxy startup timed out",
+      );
+      this.assertCurrent(gen);
       debugCaptcha("stealth proxy ready", proxyUrl);
       proxyArgs = ["--http-proxy", proxyUrl, "--ca-cert", caCertPath];
     } catch (e) {
+      if (stealth) {
+        await withTimeout(
+          stealth.stop(),
+          2_000,
+          "stealth proxy stop timed out",
+        ).catch(() => {});
+      }
+      if (this.mintGen !== gen) throw e;
       console.warn(
         `[browser] stealth proxy unavailable (${(e as Error).message}); lightpanda runs unmasked`,
       );
       stealth = null;
     }
+    this.stealth = stealth;
 
     const proc = spawn(
       exe,
@@ -239,35 +334,42 @@ export class BrowserSession {
       ],
       { stdio: "ignore" },
     );
-    // The CDP-ready poll turns a spawn failure into a catchable timeout.
     proc.on("error", () => {});
+    this.proc = proc;
 
-    // Any failure below leaves no half-initialized state behind; the next
-    // attempt starts from scratch.
+    let browser: Browser | null = null;
+    let page: Page | null = null;
+    let widgetId: string | null = null;
     try {
       const deadline = Date.now() + CDP_READY_TIMEOUT_MS;
       let cdpVersion: string | null = null;
       while (Date.now() < deadline) {
+        this.assertCurrent(gen);
         try {
-          const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
-          if (r.ok) {
-            const v = (await r.json()) as { Browser?: string };
-            cdpVersion = v.Browser ?? null;
+          const response = await fetch(
+            `http://127.0.0.1:${cdpPort}/json/version`,
+          );
+          if (response.ok) {
+            const version = (await response.json()) as { Browser?: string };
+            cdpVersion = version.Browser ?? null;
             break;
           }
         } catch {}
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
+      this.assertCurrent(gen);
       if (!cdpVersion) throw new Error("lightpanda CDP endpoint not ready");
       debugCaptcha("CDP ready", cdpVersion);
 
-      const browser = await chromium.connectOverCDP(
-        `http://127.0.0.1:${cdpPort}`,
-      );
+      browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      this.assertCurrent(gen);
+      this.browser = browser;
       debugCaptcha("CDP connected");
       const ua = userAgentFromVersion(cdpVersion);
       const context = await browser.newContext({ userAgent: ua });
+      this.assertCurrent(gen);
       await addChromeSpoof(context, ua);
+      this.assertCurrent(gen);
       // hCaptcha only needs the correct build.nvidia.com origin and sitekey.
       // Loading NVIDIA's full app pulls dozens of irrelevant analytics/assets
       // through the MITM proxy and can consume the whole mint deadline.
@@ -278,12 +380,16 @@ export class BrowserSession {
           body: "<!doctype html><html><head></head><body></body></html>",
         }),
       );
-      const page = await context.newPage();
+      this.assertCurrent(gen);
+      page = await context.newPage();
+      this.assertCurrent(gen);
+      this.page = page;
       debugCaptcha("loading NVIDIA origin");
       await page.goto(blankOrigin(), {
         waitUntil: "domcontentloaded",
         timeout: MINT_TIMEOUT_MS,
       });
+      this.assertCurrent(gen);
 
       debugCaptcha("NVIDIA origin loaded");
       const scraped = await page.evaluate(() => {
@@ -296,26 +402,28 @@ export class BrowserSession {
           apiUrl: scriptEl?.src ?? null,
         };
       });
+      this.assertCurrent(gen);
       if (scraped.sitekey) this.sitekey = scraped.sitekey;
       if (scraped.apiUrl) {
         this.hcaptchaApiUrl = appendOnloadParam(scraped.apiUrl);
       }
 
-      // Load hCaptcha api.js, calls __hcLoad() when ready
       debugCaptcha("loading hCaptcha API", this.hcaptchaApiUrl);
       await page.evaluate((apiUrl) => {
         const w = window as unknown as HCaptchaWindow;
         return new Promise<void>((resolve, reject) => {
           w.__hcLoad = resolve;
-          const s = document.createElement("script");
-          s.src = apiUrl;
-          s.onerror = () => reject(new Error("hcaptcha api.js load failed"));
-          document.head.appendChild(s);
+          const script = document.createElement("script");
+          script.src = apiUrl;
+          script.onerror = () =>
+            reject(new Error("hcaptcha api.js load failed"));
+          document.head.appendChild(script);
         });
       }, this.hcaptchaApiUrl);
+      this.assertCurrent(gen);
 
       debugCaptcha("hCaptcha API ready");
-      const widgetId = await page.evaluate((sitekey) => {
+      widgetId = await page.evaluate((sitekey) => {
         const w = window as unknown as HCaptchaWindow;
         const div = document.createElement("div");
         div.id = "mint_widget";
@@ -324,22 +432,34 @@ export class BrowserSession {
         document.body.appendChild(div);
         return w.hcaptcha.render(div.id, { sitekey, size: "invisible" });
       }, this.sitekey);
+      this.assertCurrent(gen);
 
       debugCaptcha("hCaptcha widget ready", widgetId);
-      this.proc = proc;
-      this.stealth = stealth;
-      this.browser = browser;
-      this.page = page;
       this.widgetId = widgetId;
+      this.readyGen = gen;
     } catch (e) {
+      if (this.proc === proc) this.proc = null;
+      if (this.browser === browser) this.browser = null;
+      if (this.page === page) this.page = null;
+      if (this.stealth === stealth) this.stealth = null;
+      if (this.widgetId === widgetId) this.widgetId = null;
+      if (this.readyGen === gen) this.readyGen = -1;
       proc.kill();
-      await stealth?.stop();
+      await Promise.allSettled([
+        browser
+          ? withTimeout(browser.close(), 2_000, "browser close timed out")
+          : Promise.resolve(),
+        stealth
+          ? withTimeout(stealth.stop(), 2_000, "stealth proxy stop timed out")
+          : Promise.resolve(),
+      ]);
       throw e;
     }
   }
 
-  private async mintTokenInner(): Promise<string> {
-    await this.ensureBrowser();
+  private async mintTokenInner(gen: number): Promise<string> {
+    await this.ensureBrowser(gen);
+    this.assertCurrent(gen);
     const page = this.page;
     if (!page) throw new Error("no page");
     const widgetId = this.widgetId;
@@ -351,6 +471,7 @@ export class BrowserSession {
       w.hcaptcha.reset(id);
       return w.hcaptcha.execute(id);
     }, widgetId);
+    this.assertCurrent(gen);
 
     debugCaptcha("waiting for captcha token");
     await page.waitForFunction(
@@ -362,12 +483,14 @@ export class BrowserSession {
       widgetId,
       { timeout: TOKEN_POLL_TIMEOUT_MS },
     );
+    this.assertCurrent(gen);
 
     debugCaptcha("captcha token received");
     const token = await page.evaluate((id) => {
       const w = window as unknown as HCaptchaWindow;
       return w.hcaptcha.getResponse(id);
     }, widgetId);
+    this.assertCurrent(gen);
     if (typeof token !== "string" || !token.startsWith("P1_")) {
       throw new Error(
         `hcaptcha mint failed: expected P1_ token, got ${JSON.stringify(token?.slice(0, 40))}`,

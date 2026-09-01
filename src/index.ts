@@ -28,7 +28,9 @@ const pool = new TokenPool(session, env.poolSize, {
       `${TAG} token pool refresh failed (${error.message}); retrying`,
     ),
 });
-const upstream = new Upstream();
+const upstream = new Upstream({
+  headersTimeoutMs: env.upstreamHeadersTimeoutMs,
+});
 
 if (
   env.apiKeys.length === 0 &&
@@ -55,6 +57,7 @@ const deriveDefaultRoute = (): ModelRoute | undefined => {
     ? {
         modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
         functionId: entry.functionId,
+        params: entry.params,
       }
     : undefined;
 };
@@ -144,10 +147,11 @@ const server = await createServer({
 });
 
 console.log(
-  `${TAG} listening on ${server.url} (pool=${env.poolSize}, default=${env.model})`,
+  `${TAG} listening on ${server.url} (pool=${env.poolSize}, upstream-concurrency=${env.upstreamConcurrency}, min-interval=${env.upstreamMinIntervalMs}ms, default=${env.model})`,
 );
 
 const stop = async () => {
+  pool.close();
   await server.stop(true);
   await session.close();
   process.exit(0);

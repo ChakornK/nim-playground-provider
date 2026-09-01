@@ -5,12 +5,101 @@ export function upstreamUrl(modelId: string): string {
   return `${UPSTREAM_BASE}/models/${modelId}`;
 }
 
-const DEFAULT_TEMPERATURE = 1;
-const DEFAULT_TOP_P = 1;
-const DEFAULT_MAX_TOKENS = 16384;
-const HEADERS_TIMEOUT_MS = 60_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 120_000;
 
 const dropsLogged = new Set<string>();
+
+export interface UpstreamOpts {
+  headersTimeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+export class UpstreamHeadersTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`upstream response headers timed out after ${timeoutMs}ms`);
+    this.name = "UpstreamHeadersTimeoutError";
+  }
+}
+
+export class UpstreamBodyTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`upstream response body timed out after ${timeoutMs}ms`);
+    this.name = "UpstreamBodyTimeoutError";
+  }
+}
+
+const requestAbortError = (): Error => {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("request aborted", "AbortError");
+  }
+  const error = new Error("request aborted");
+  error.name = "AbortError";
+  return error;
+};
+
+export interface ReadBodyOpts {
+  timeoutMs: number;
+  signal?: AbortSignal;
+  maxBytes?: number;
+}
+
+/** Read a response body within a bounded deadline and size. */
+export async function readTextBody(
+  response: Response,
+  opts: ReadBodyOpts,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new SyntaxError("upstream response body is empty");
+  const maxBytes = opts.maxBytes ?? 16 * 1024 * 1024;
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  let complete = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new UpstreamBodyTimeoutError(opts.timeoutMs)),
+      opts.timeoutMs,
+    );
+    timer.unref();
+    onAbort = () => reject(requestAbortError());
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const reading = (async () => {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw new Error("upstream response body too large");
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    complete = true;
+    return text;
+  })();
+
+  try {
+    return await Promise.race([reading, interrupted]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
+    if (!complete) void reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+}
+
+/** Read and parse a bounded non-streaming JSON response. */
+export async function readJsonBody(
+  response: Response,
+  opts: ReadBodyOpts,
+): Promise<unknown> {
+  return JSON.parse(await readTextBody(response, opts)) as unknown;
+}
 
 export function buildUpstreamBody(params: {
   model: string;
@@ -54,12 +143,14 @@ export function buildUpstreamBody(params: {
       clear_thinking: false,
     },
     model: params.model,
-    ...(allowed("temperature")
-      ? { temperature: params.temperature ?? DEFAULT_TEMPERATURE }
+    ...(params.temperature !== undefined && allowed("temperature")
+      ? { temperature: params.temperature }
       : {}),
-    ...(allowed("top_p") ? { top_p: params.topP ?? DEFAULT_TOP_P } : {}),
-    ...(allowed("max_tokens")
-      ? { max_tokens: params.maxTokens ?? DEFAULT_MAX_TOKENS }
+    ...(params.topP !== undefined && allowed("top_p")
+      ? { top_p: params.topP }
+      : {}),
+    ...(params.maxTokens !== undefined && allowed("max_tokens")
+      ? { max_tokens: params.maxTokens }
       : {}),
     messages: params.messages,
     ...(params.tools?.length ? { tools: params.tools } : {}),
@@ -72,6 +163,14 @@ export function buildUpstreamBody(params: {
 }
 
 export class Upstream {
+  private readonly headersTimeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(opts: UpstreamOpts = {}) {
+    this.headersTimeoutMs = opts.headersTimeoutMs ?? DEFAULT_HEADERS_TIMEOUT_MS;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
   /** Fetch a completion from NVIDIA. Resolves when headers arrive, caller consumes the body. */
   async chat(params: UpstreamChatParams): Promise<Response> {
     const route = params.route;
@@ -87,12 +186,18 @@ export class Upstream {
       allowedParams: params.allowedParams,
     });
 
-    // Bounds the wait for response headers; cleared once headers arrive so
-    // long-running streams are not aborted.
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), HEADERS_TIMEOUT_MS);
+    let timedOut = false;
+    const onAbort = () => ctrl.abort(params.signal?.reason);
+    if (params.signal?.aborted) onAbort();
+    else params.signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ctrl.abort();
+    }, this.headersTimeoutMs);
+    timer.unref();
     try {
-      return await fetch(upstreamUrl(route.modelId), {
+      return await this.fetchImpl(upstreamUrl(route.modelId), {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -108,8 +213,14 @@ export class Upstream {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
+    } catch (error) {
+      if (timedOut && error instanceof Error && error.name === "AbortError") {
+        throw new UpstreamHeadersTimeoutError(this.headersTimeoutMs);
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
+      params.signal?.removeEventListener("abort", onAbort);
     }
   }
 }

@@ -3,7 +3,7 @@ import { BrowserSession } from "../src/browser.ts";
 import { resolveModelRoute } from "../src/catalog.ts";
 import { detectLightpanda, env } from "../src/constants.ts";
 import { createServer } from "../src/server.ts";
-import { TokenPool } from "../src/token-pool.ts";
+import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 import { Upstream } from "../src/upstream.ts";
 
 const LIVE = !!process.env.NVIDIA_LIVE;
@@ -41,6 +41,7 @@ test.skipIf(!LIVE)(
       expect(text).toContain("content");
       expect(text.trim().endsWith("data: [DONE]")).toBe(true);
     } finally {
+      pool.close();
       await server.stop(true);
       await session.close();
     }
@@ -100,6 +101,7 @@ test.skipIf(!LIVE)(
       const done = text.trim().endsWith("data: [DONE]");
       expect(done).toBe(true);
     } finally {
+      pool.close();
       await server.stop(true);
       await session.close();
     }
@@ -137,9 +139,61 @@ test.skipIf(!LIVE)(
       expect(completion.choices[0].message.content.length).toBeGreaterThan(0);
       expect(completion.usage.total_tokens).toBeGreaterThan(0);
     } finally {
+      pool.close();
       await server.stop(true);
       await session.close();
     }
   },
   180000,
+);
+
+test.skipIf(!LIVE)(
+  "live: invalid Kimi captcha token resets the browser and retries once",
+  async () => {
+    const session = new BrowserSession({ lightpandaPath: detectLightpanda() });
+    let mints = 0;
+    let resets = 0;
+    const source: TokenSource = {
+      async mintToken() {
+        mints++;
+        if (mints === 1) return "P1_invalid";
+        return session.mintToken();
+      },
+      async reset() {
+        resets++;
+        await session.reset();
+      },
+    };
+    const pool = new TokenPool(source, 1);
+    pool.prewarm();
+    const server = await createServer({
+      pool,
+      upstream: new Upstream(),
+      model: env.model,
+      defaultRoute: (await route()) ?? undefined,
+      upstreamMinIntervalMs: 0,
+      port: 0,
+    });
+    try {
+      const r = await fetch(`${server.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "reply exactly: OK" }],
+          stream: false,
+          enable_thinking: false,
+          max_tokens: 16,
+          top_p: 1,
+        }),
+      });
+      expect(r.status).toBe(200);
+      expect(resets).toBe(1);
+      expect(JSON.stringify(await r.json())).toContain("OK");
+    } finally {
+      pool.close();
+      await server.stop(true);
+      await session.close();
+    }
+  },
+  240000,
 );
