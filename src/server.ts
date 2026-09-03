@@ -2,10 +2,20 @@ import { timingSafeEqual } from "node:crypto";
 import { Elysia } from "elysia";
 import { env, NAMESPACE } from "./constants.ts";
 import {
+  AllRoutesCoolingError,
+  createDirectEgressCoordinator,
+  EgressClosedError,
+  type EgressCoordinator,
+  EgressPreparationError,
+  type GenerationLease,
+  type GenerationOutcome,
+} from "./egress.ts";
+import {
   type RequestLease,
   RequestScheduler,
   type RequestStartPermit,
   SchedulerBackoffError,
+  SchedulerClosedError,
   SchedulerQueueFullError,
 } from "./scheduler.ts";
 import type { TokenPool } from "./token-pool.ts";
@@ -24,8 +34,9 @@ import {
 } from "./upstream.ts";
 
 export interface ServerDeps {
-  pool: TokenPool;
-  upstream: Upstream;
+  pool?: TokenPool;
+  upstream?: Upstream;
+  egress?: EgressCoordinator;
   model?: string;
   /** Allowed bearer keys, falls back to env.apiKeys if omitted. Empty array disables auth. */
   apiKeys?: string[];
@@ -58,6 +69,7 @@ export interface ServerDeps {
 export interface ServerInstance {
   port: number;
   hostname: string;
+  beginShutdown(): void;
   stop: (closeActiveConnections?: boolean) => Promise<void>;
   url: string;
 }
@@ -127,14 +139,21 @@ export function isAuthorized(req: Request, keys: string[]): boolean {
   return ok;
 }
 
-// NVIDIA currently reports rejected hCaptcha credentials as either a captcha
-// error or the generic status description "Token is invalid".
+// This terminal validation response is the only post-dispatch retry path.
 const isTokenRejection = (status: number, text: string) =>
-  status >= 400 &&
-  status < 600 &&
-  /(?:captcha|\btoken\s+is\s+invalid\b)/i.test(text);
+  status === 400 &&
+  /(?:invalid captcha token|\btoken\s+is\s+invalid\b)/i.test(text);
 
 const MAX_TOKEN_RETRIES = 1;
+const MAX_ROUTE_ATTEMPTS = 3;
+const TOKEN_ACQUISITION_DEADLINE_MS = 60_000;
+
+class CaptchaAcquireTimeoutError extends Error {
+  constructor() {
+    super("timed out waiting for a captcha token");
+    this.name = "CaptchaAcquireTimeoutError";
+  }
+}
 
 const retryAfterMs = (response: Response): number | null => {
   const value = response.headers.get("retry-after");
@@ -145,13 +164,10 @@ const retryAfterMs = (response: Response): number | null => {
   return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
 };
 
-const isOverloaded = (status: number, text: string): boolean =>
-  status === 429 ||
-  status === 503 ||
-  (status >= 500 &&
-    /(?:rate.?limit|too many requests|service unavailable|overload|capacity)/i.test(
-      text,
-    ));
+const isAmbiguousProviderIpFailure = (status: number): boolean =>
+  status === 403 || status === 429;
+
+const isProviderGlobalFailure = (status: number): boolean => status >= 500;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
@@ -175,6 +191,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     deps.upstreamBodyTimeoutMs ?? env.upstreamBodyTimeoutMs;
   const upstreamStreamIdleTimeoutMs =
     deps.upstreamStreamIdleTimeoutMs ?? env.upstreamStreamIdleTimeoutMs;
+  const egress =
+    deps.egress ??
+    (deps.pool && deps.upstream
+      ? createDirectEgressCoordinator(deps.pool, deps.upstream)
+      : null);
+  if (!egress) {
+    throw new Error("server requires egress or pool and upstream dependencies");
+  }
   const scheduler = new RequestScheduler({
     concurrency: deps.upstreamConcurrency ?? env.upstreamConcurrency,
     minIntervalMs: deps.upstreamMinIntervalMs ?? env.upstreamMinIntervalMs,
@@ -189,15 +213,18 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       upstreamMaxBackoffMs,
       Math.max(minimumMs, exponential),
     );
-    return scheduler.backoff(delay);
+    const applied = scheduler.backoff(delay);
+    console.warn(`[server] provider cooldown (duration=${applied}ms)`);
+    return applied;
   };
   const markUpstreamHealthy = () => {
     upstreamFailureStreak = 0;
   };
-  const cooldownError = (error: SchedulerBackoffError) =>
+  const cooldownError = (error: { message: string; retryAfterMs: number }) =>
     errorJson(error.message, 429, "rate_limit_error", "upstream_cooldown", {
       "retry-after": String(Math.max(1, Math.ceil(error.retryAfterMs / 1_000))),
     });
+  let shuttingDown = false;
 
   const handleFetch = async (req: Request) => {
     const url = new URL(req.url);
@@ -248,6 +275,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     // the client into reusing a socket whose leftover bytes then parse as the
     // next request's headers (431) or RST the unread response.
     const rawBody = await req.text();
+    if (shuttingDown) {
+      return errorJson(
+        "server is shutting down",
+        503,
+        "server_error",
+        "server_shutting_down",
+      );
+    }
     if (
       rawBody.length > MAX_BODY_BYTES ||
       Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES
@@ -302,6 +337,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       if (error instanceof SchedulerBackoffError) return cooldownError(error);
+      if (error instanceof SchedulerClosedError) {
+        return errorJson(
+          "server is shutting down",
+          503,
+          "server_error",
+          "server_shutting_down",
+        );
+      }
       if (error.name === "AbortError") {
         return errorJson(
           "request cancelled while waiting for NVIDIA",
@@ -319,6 +362,56 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
     }
 
     let releaseLease: (() => void) | null = lease.release;
+    let generation: GenerationLease | null = null;
+    let routeAttempts = 0;
+    const tokenDeadlineAt = Date.now() + TOKEN_ACQUISITION_DEADLINE_MS;
+    const finishGeneration = async (outcome: GenerationOutcome) => {
+      const current = generation as GenerationLease | null;
+      generation = null;
+      await current?.finish(outcome);
+    };
+    const getGeneration = (): GenerationLease => {
+      const current = generation as GenerationLease | null;
+      if (!current) throw new EgressPreparationError();
+      return current;
+    };
+    const acquireGenerationToken = async (): Promise<string> => {
+      let lastError: unknown;
+      while (routeAttempts < MAX_ROUTE_ATTEMPTS) {
+        if (!generation) {
+          routeAttempts++;
+          try {
+            generation = await egress.acquire(req.signal);
+          } catch (error) {
+            lastError = error;
+            if (error instanceof EgressPreparationError) continue;
+            throw error;
+          }
+        }
+        const remaining = tokenDeadlineAt - Date.now();
+        if (remaining <= 0) throw new CaptchaAcquireTimeoutError();
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort(), remaining);
+        timer.unref();
+        try {
+          return await generation.acquireToken(
+            AbortSignal.any([req.signal, deadline.signal]),
+          );
+        } catch (error) {
+          if (req.signal.aborted) throw error;
+          lastError = deadline.signal.aborted
+            ? new CaptchaAcquireTimeoutError()
+            : error;
+          await finishGeneration("pre_dispatch_route_failure");
+          if (deadline.signal.aborted) throw lastError;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      throw lastError instanceof Error
+        ? lastError
+        : new EgressPreparationError();
+    };
     try {
       let up: Response | null = null;
       let lastUpstreamError: { status: number; text: string } | null = null;
@@ -335,6 +428,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             if (error instanceof SchedulerBackoffError) {
               return cooldownError(error);
             }
+            if (error instanceof SchedulerClosedError) {
+              return errorJson(
+                "server is shutting down",
+                503,
+                "server_error",
+                "server_shutting_down",
+              );
+            }
             return errorJson(
               "request cancelled before NVIDIA started",
               499,
@@ -343,10 +444,28 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           }
 
           try {
-            token = await deps.pool.acquire(req.signal);
+            token = await acquireGenerationToken();
           } catch (e) {
             startPermit.cancel();
             const error = e instanceof Error ? e : new Error(String(e));
+            if (
+              error instanceof AllRoutesCoolingError ||
+              error instanceof SchedulerBackoffError
+            ) {
+              return cooldownError(error);
+            }
+            if (
+              shuttingDown ||
+              error instanceof EgressClosedError ||
+              error instanceof SchedulerClosedError
+            ) {
+              return errorJson(
+                "server is shutting down",
+                503,
+                "server_error",
+                "server_shutting_down",
+              );
+            }
             if (error.name === "AbortError") {
               return errorJson(
                 "request cancelled while waiting for captcha",
@@ -365,8 +484,11 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
         }
 
         let res: Response;
+        let mayHaveDispatched = false;
         try {
-          res = await deps.upstream.chat({
+          const currentGeneration = getGeneration();
+          mayHaveDispatched = true;
+          res = await currentGeneration.chat({
             token,
             messages: body.messages,
             model: reqModel,
@@ -379,21 +501,14 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             tools: body.tools,
             allowedParams: route.params,
             signal: req.signal,
+            onDispatch: () => {
+              mayHaveDispatched = true;
+            },
           });
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
-          if (error instanceof UpstreamHeadersTimeoutError) {
-            const backoff = imposeBackoff();
-            const retrySeconds = Math.ceil(backoff / 1_000);
-            return errorJson(
-              logUpstreamError(error.message),
-              504,
-              "upstream_error",
-              "upstream_timeout",
-              { "retry-after": String(retrySeconds) },
-            );
-          }
           if (req.signal.aborted || error.name === "AbortError") {
+            await finishGeneration("neutral");
             return errorJson(
               req.signal.aborted
                 ? "request cancelled while NVIDIA was running"
@@ -402,10 +517,27 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
               req.signal.aborted ? "request_cancelled" : "upstream_error",
             );
           }
+          if (!mayHaveDispatched) {
+            await finishGeneration("pre_dispatch_route_failure");
+            continue;
+          }
+          await finishGeneration("ambiguous_post_dispatch_failure");
+          const backoff = imposeBackoff();
+          if (error instanceof UpstreamHeadersTimeoutError) {
+            return errorJson(
+              logUpstreamError(error.message),
+              504,
+              "upstream_error",
+              "upstream_timeout",
+              { "retry-after": String(Math.ceil(backoff / 1_000)) },
+            );
+          }
           return errorJson(
             logUpstreamError(error.message),
             502,
             "upstream_error",
+            "upstream_error",
+            { "retry-after": String(Math.ceil(backoff / 1_000)) },
           );
         }
 
@@ -422,8 +554,17 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           });
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
+          if (req.signal.aborted || error.name === "AbortError") {
+            await finishGeneration("neutral");
+            return errorJson(
+              "request cancelled while reading NVIDIA error",
+              499,
+              "request_cancelled",
+            );
+          }
+          await finishGeneration("ambiguous_post_dispatch_failure");
+          const backoff = imposeBackoff();
           if (error instanceof UpstreamBodyTimeoutError) {
-            const backoff = imposeBackoff();
             return errorJson(
               logUpstreamError(error.message),
               504,
@@ -434,41 +575,42 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
               },
             );
           }
-          if (req.signal.aborted || error.name === "AbortError") {
-            return errorJson(
-              "request cancelled while reading NVIDIA error",
-              499,
-              "request_cancelled",
-            );
-          }
           return errorJson(
             logUpstreamError(error.message),
             502,
             "upstream_error",
             "upstream_error_body_invalid",
+            { "retry-after": String(Math.ceil(backoff / 1_000)) },
           );
         }
         lastUpstreamError = { status: res.status, text };
         lastWasRejection = isTokenRejection(res.status, text);
         if (lastWasRejection) {
-          try {
-            await deps.pool.invalidate();
-          } catch (e) {
-            return errorJson(
-              `captcha reset failed: ${(e as Error).message}`,
-              503,
-              "server_error",
-            );
-          }
           if (attempt < MAX_TOKEN_RETRIES) {
+            try {
+              await getGeneration().invalidateCaptcha();
+            } catch (e) {
+              await finishGeneration("pre_dispatch_route_failure");
+              return errorJson(
+                `captcha reset failed: ${(e as Error).message}`,
+                503,
+                "server_error",
+              );
+            }
             console.warn(
               `[server] NVIDIA rejected a captcha token (attempt ${attempt + 1}/${MAX_TOKEN_RETRIES + 1}); reset browser and retrying once`,
             );
             continue;
           }
-        } else if (isOverloaded(res.status, text)) {
+          await finishGeneration("definitive_captcha_rejection");
+        } else if (isAmbiguousProviderIpFailure(res.status)) {
+          await finishGeneration("ambiguous_post_dispatch_failure");
+          lastBackoffMs = imposeBackoff(retryAfterMs(res) ?? 0);
+        } else if (isProviderGlobalFailure(res.status)) {
+          await finishGeneration("provider_global_failure");
           lastBackoffMs = imposeBackoff(retryAfterMs(res) ?? 0);
         } else {
+          await finishGeneration("neutral");
           markUpstreamHealthy();
         }
         break;
@@ -507,8 +649,22 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           })) as Record<string, unknown>;
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
-          if (error instanceof UpstreamBodyTimeoutError) {
-            const backoff = imposeBackoff();
+          if (req.signal.aborted || error.name === "AbortError") {
+            await finishGeneration("neutral");
+            return errorJson(
+              "request cancelled while reading NVIDIA response",
+              499,
+              "request_cancelled",
+            );
+          }
+          const timedOut = error instanceof UpstreamBodyTimeoutError;
+          await finishGeneration(
+            timedOut
+              ? "ambiguous_post_dispatch_failure"
+              : "provider_global_failure",
+          );
+          const backoff = imposeBackoff();
+          if (timedOut) {
             return errorJson(
               logUpstreamError(error.message),
               504,
@@ -519,19 +675,15 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
               },
             );
           }
-          if (req.signal.aborted || error.name === "AbortError") {
-            return errorJson(
-              "request cancelled while reading NVIDIA response",
-              499,
-              "request_cancelled",
-            );
-          }
           return errorJson(
             "upstream returned a non-JSON body",
             502,
             "upstream_error",
+            "upstream_error",
+            { "retry-after": String(Math.ceil(backoff / 1_000)) },
           );
         }
+        await finishGeneration("success");
         markUpstreamHealthy();
         completion.id = `chatcmpl-${crypto.randomUUID()}`;
         return json(completion, 200);
@@ -540,6 +692,15 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       const upstreamAbort = new AbortController();
       const meta: StreamMeta = { finishReason: null };
       let clientGone = false;
+      const streamGeneration = getGeneration();
+      generation = null;
+      const onGenerationAbort = () => upstreamAbort.abort();
+      if (streamGeneration.signal.aborted) onGenerationAbort();
+      else {
+        streamGeneration.signal.addEventListener("abort", onGenerationAbort, {
+          once: true,
+        });
+      }
       const releaseStreamLease = releaseLease;
       releaseLease = null;
       const streamOut = new ReadableStream<Uint8Array>({
@@ -573,13 +734,24 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             sendStreamError();
           } finally {
             clearTimeout(idle);
-            if (!meta.finishReason && !clientGone) {
+            streamGeneration.signal.removeEventListener(
+              "abort",
+              onGenerationAbort,
+            );
+            if (
+              clientGone ||
+              (shuttingDown && streamGeneration.signal.aborted)
+            ) {
+              await streamGeneration.finish("neutral");
+            } else if (meta.finishReason) {
+              await streamGeneration.finish("success");
+              markUpstreamHealthy();
+            } else {
+              await streamGeneration.finish("ambiguous_post_dispatch_failure");
               imposeBackoff();
               console.warn(
                 "[server] stream ended without finish_reason; backing off NVIDIA requests",
               );
-            } else if (meta.finishReason) {
-              markUpstreamHealthy();
             }
             releaseStreamLease();
             try {
@@ -594,6 +766,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
       });
       return new Response(streamOut, { status: 200, headers: SSE_HEADERS });
     } finally {
+      await finishGeneration("neutral");
       releaseLease?.();
     }
   };
@@ -617,11 +790,19 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
   if (!server) throw new Error("failed to start server");
 
   const actualPort = server.port ?? port;
+  const beginShutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    scheduler.close();
+    egress.beginShutdown();
+  };
   return {
     port: actualPort,
     hostname,
     url: `http://${hostname}:${actualPort}`,
+    beginShutdown,
     stop: async (closeActiveConnections?: boolean) => {
+      beginShutdown();
       await app.stop(closeActiveConnections);
     },
   };

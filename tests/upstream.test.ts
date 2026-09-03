@@ -26,6 +26,39 @@ const abortableFetch = ((_url: string | URL | Request, init?: RequestInit) =>
     else signal?.addEventListener("abort", rejectAbort, { once: true });
   })) as typeof fetch;
 
+test("upstream marks dispatch synchronously before calling fetch", async () => {
+  const events: string[] = [];
+  const upstream = new Upstream({
+    fetchImpl: async (_input, init) => {
+      events.push("fetch");
+      expect(init?.redirect).toBe("manual");
+      return new Response("{}");
+    },
+  });
+  const request = params();
+  request.onDispatch = () => events.push("dispatch");
+
+  await upstream.chat(request);
+  expect(events).toEqual(["dispatch", "fetch"]);
+});
+
+test("upstream marks timed-out fetches as potentially dispatched", async () => {
+  let dispatched = false;
+  const upstream = new Upstream({
+    headersTimeoutMs: 10,
+    fetchImpl: abortableFetch,
+  });
+  const request = params();
+  request.onDispatch = () => {
+    dispatched = true;
+  };
+
+  await expect(upstream.chat(request)).rejects.toBeInstanceOf(
+    UpstreamHeadersTimeoutError,
+  );
+  expect(dispatched).toBe(true);
+});
+
 test("upstream reports its own headers timeout distinctly", async () => {
   const upstream = new Upstream({
     headersTimeoutMs: 10,

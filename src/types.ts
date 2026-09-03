@@ -93,4 +93,6 @@ export interface UpstreamChatParams {
   allowedParams?: string[];
   /** Cancels the upstream request when the downstream client disconnects. */
   signal?: AbortSignal;
+  /** Runs synchronously immediately before the NVIDIA fetch begins. */
+  onDispatch?: () => void;
 }

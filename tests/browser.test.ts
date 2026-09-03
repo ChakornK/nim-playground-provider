@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { BrowserSession, withAbort, withTimeout } from "../src/browser.ts";
+import type { StealthProxy } from "../src/stealth.ts";
 
 test("withTimeout returns the value when the promise resolves in time", async () => {
   const fast = new Promise<string>((r) => setTimeout(() => r("ok"), 5));
@@ -28,6 +29,31 @@ test("withAbort releases a stuck operation when reset", async () => {
     name: "AbortError",
     message: "mint reset",
   });
+});
+
+test("proxy-mode browser fails closed when stealth startup fails", async () => {
+  let stops = 0;
+  const stealth = {
+    async start() {
+      throw new Error("unavailable");
+    },
+    async stop() {
+      stops++;
+    },
+  } as unknown as StealthProxy;
+  const session = new BrowserSession({
+    lightpandaPath: "unused",
+    requireStealth: true,
+    stealthFactory: () => stealth,
+  });
+  const internals = session as unknown as {
+    startBrowser(gen: number): Promise<void>;
+  };
+
+  await expect(internals.startBrowser(0)).rejects.toThrow(
+    "required stealth proxy unavailable",
+  );
+  expect(stops).toBe(1);
 });
 
 test("browser reset detaches a stuck startup from the next generation", async () => {

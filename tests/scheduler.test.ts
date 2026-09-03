@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { RequestScheduler, SchedulerBackoffError } from "../src/scheduler.ts";
+import {
+  RequestScheduler,
+  SchedulerBackoffError,
+  SchedulerClosedError,
+} from "../src/scheduler.ts";
 
 test("scheduler holds excess requests until the active lease releases", async () => {
   const scheduler = new RequestScheduler({ concurrency: 1, minIntervalMs: 0 });
@@ -90,6 +94,19 @@ test("scheduler backoff rejects requests still queued for a lease", async () => 
 
   await expect(queued).rejects.toBeInstanceOf(SchedulerBackoffError);
   first.release();
+});
+
+test("scheduler close rejects queued and future requests", async () => {
+  const scheduler = new RequestScheduler({ concurrency: 1, minIntervalMs: 0 });
+  const active = await scheduler.acquire();
+  const queued = scheduler.acquire();
+  scheduler.close();
+
+  await expect(queued).rejects.toBeInstanceOf(SchedulerClosedError);
+  await expect(scheduler.acquire()).rejects.toBeInstanceOf(
+    SchedulerClosedError,
+  );
+  active.release();
 });
 
 test("scheduler removes a queued request when its signal aborts", async () => {

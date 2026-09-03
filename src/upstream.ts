@@ -1,4 +1,5 @@
 import { ORIGIN, REFERER, UPSTREAM_BASE, USER_AGENT } from "./constants.ts";
+import type { FetchLike } from "./route-fetch.ts";
 import type { OpenAIMessage, UpstreamChatParams } from "./types.ts";
 
 export function upstreamUrl(modelId: string): string {
@@ -11,7 +12,7 @@ const dropsLogged = new Set<string>();
 
 export interface UpstreamOpts {
   headersTimeoutMs?: number;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
 }
 
 export class UpstreamHeadersTimeoutError extends Error {
@@ -164,11 +165,11 @@ export function buildUpstreamBody(params: {
 
 export class Upstream {
   private readonly headersTimeoutMs: number;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
 
   constructor(opts: UpstreamOpts = {}) {
     this.headersTimeoutMs = opts.headersTimeoutMs ?? DEFAULT_HEADERS_TIMEOUT_MS;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl ?? (fetch as FetchLike);
   }
 
   /** Fetch a completion from NVIDIA. Resolves when headers arrive, caller consumes the body. */
@@ -197,6 +198,7 @@ export class Upstream {
     }, this.headersTimeoutMs);
     timer.unref();
     try {
+      params.onDispatch?.();
       return await this.fetchImpl(upstreamUrl(route.modelId), {
         method: "POST",
         headers: {
@@ -211,6 +213,7 @@ export class Upstream {
           "nv-function-id": route.functionId,
         },
         body: JSON.stringify(body),
+        redirect: "manual",
         signal: ctrl.signal,
       });
     } catch (error) {

@@ -35,6 +35,13 @@ export class SchedulerQueueFullError extends Error {
   }
 }
 
+export class SchedulerClosedError extends Error {
+  constructor() {
+    super("request scheduler is closed");
+    this.name = "SchedulerClosedError";
+  }
+}
+
 export class SchedulerBackoffError extends Error {
   readonly retryAfterMs: number;
 
@@ -81,6 +88,7 @@ export class RequestScheduler {
   private nextStartAt = 0;
   private backoffUntil = 0;
   private startTail: Promise<void> = Promise.resolve();
+  private closed = false;
 
   constructor(opts: RequestSchedulerOpts = {}) {
     this.concurrency = Math.max(1, Math.trunc(opts.concurrency ?? 1));
@@ -89,6 +97,7 @@ export class RequestScheduler {
   }
 
   acquire(signal?: AbortSignal): Promise<RequestLease> {
+    if (this.closed) return Promise.reject(new SchedulerClosedError());
     if (signal?.aborted) return Promise.reject(abortError());
     const backoff = this.remainingBackoffMs();
     if (backoff > 0) {
@@ -112,6 +121,17 @@ export class RequestScheduler {
       }
       this.queue.push(waiter);
     });
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.queue.splice(0)) {
+      if (waiter.onAbort) {
+        waiter.signal?.removeEventListener("abort", waiter.onAbort);
+      }
+      waiter.reject(new SchedulerClosedError());
+    }
   }
 
   /** Open a cooldown and reject requests that have not acquired a lease. */
@@ -175,6 +195,7 @@ export class RequestScheduler {
       .then(async () => {
         try {
           while (true) {
+            if (this.closed) throw new SchedulerClosedError();
             if (signal?.aborted) throw abortError();
             const backoff = this.remainingBackoffMs();
             if (backoff > 0) throw new SchedulerBackoffError(backoff);

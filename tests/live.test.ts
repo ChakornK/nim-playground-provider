@@ -2,11 +2,17 @@ import { expect, test } from "bun:test";
 import { BrowserSession } from "../src/browser.ts";
 import { resolveModelRoute } from "../src/catalog.ts";
 import { detectLightpanda, env } from "../src/constants.ts";
+import {
+  createRuntimeEpochFactory,
+  RotatingEgressCoordinator,
+} from "../src/egress.ts";
+import { loadProxyFile } from "../src/proxy-list.ts";
 import { createServer } from "../src/server.ts";
 import { TokenPool, type TokenSource } from "../src/token-pool.ts";
 import { Upstream } from "../src/upstream.ts";
 
 const LIVE = !!process.env.NVIDIA_LIVE;
+const PROXY_LIVE = LIVE && !!process.env.NVIDIA_PROXY_LIVE;
 
 /** Real deploy route for the default model, resolved against the queue endpoint. */
 const route = () => resolveModelRoute(env.model);
@@ -145,6 +151,59 @@ test.skipIf(!LIVE)(
     }
   },
   180000,
+);
+
+test.skipIf(!PROXY_LIVE)(
+  "live: user-supplied proxy preserves Kimi completion affinity",
+  async () => {
+    const proxyFile = await loadProxyFile(env.proxyFile);
+    expect(proxyFile.state).toBe("loaded");
+    const firstRoute = proxyFile.routes[0];
+    if (!firstRoute) throw new Error("proxy file has no valid route");
+    const egress = new RotatingEgressCoordinator({
+      routes: [firstRoute],
+      factory: createRuntimeEpochFactory({
+        lightpandaPath: detectLightpanda(),
+        poolSize: 1,
+        headersTimeoutMs: env.upstreamHeadersTimeoutMs,
+      }),
+      baseBackoffMs: 1_000,
+      maxBackoffMs: 1_000,
+    });
+    const server = await createServer({
+      egress,
+      model: env.model,
+      defaultRoute: (await route()) ?? undefined,
+      upstreamMinIntervalMs: 0,
+      port: 0,
+    });
+    try {
+      const response = await fetch(`${server.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "reply exactly: OK" }],
+          stream: false,
+          enable_thinking: false,
+          max_tokens: 16,
+          top_p: 1,
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(await response.json())).toContain("OK");
+      expect(
+        egress
+          .getHealthSnapshot()
+          .find((item) => item.routeId === firstRoute.id),
+      ).toMatchObject({ consecutiveFailures: 0, active: true });
+    } finally {
+      server.beginShutdown();
+      await egress.drain(2_000);
+      await server.stop(true);
+      await egress.close();
+    }
+  },
+  240000,
 );
 
 test.skipIf(!LIVE)(

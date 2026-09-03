@@ -1,4 +1,5 @@
 node_modules
+PROXIES.txt
 .git
 tests
 .github

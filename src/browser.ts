@@ -7,6 +7,7 @@ import {
   type Page,
 } from "playwright-core";
 import { env, USER_AGENT } from "./constants.ts";
+import type { FetchLike } from "./route-fetch.ts";
 import { StealthProxy } from "./stealth.ts";
 
 const HCAPTCHA_API_FALLBACK =
@@ -149,6 +150,13 @@ export async function withAbort<T>(
   }
 }
 
+export interface BrowserSessionOpts {
+  lightpandaPath?: string;
+  fetchImpl?: FetchLike;
+  requireStealth?: boolean;
+  stealthFactory?: () => StealthProxy;
+}
+
 export class BrowserSession {
   private browser: Browser | null = null;
   private page: Page | null = null;
@@ -163,9 +171,9 @@ export class BrowserSession {
   private hcaptchaApiUrl = HCAPTCHA_API_FALLBACK;
   // Persistent invisible widget, reused via reset+execute to avoid per-mint leakage
   private widgetId: string | null = null;
-  private opts: { lightpandaPath?: string };
+  private opts: BrowserSessionOpts;
 
-  constructor(opts: { lightpandaPath?: string } = {}) {
+  constructor(opts: BrowserSessionOpts = {}) {
     this.opts = opts;
   }
 
@@ -294,7 +302,9 @@ export class BrowserSession {
     let proxyArgs: string[] = [];
     let stealth: StealthProxy | null = null;
     try {
-      stealth = new StealthProxy();
+      stealth =
+        this.opts.stealthFactory?.() ??
+        new StealthProxy({ fetchImpl: this.opts.fetchImpl });
       debugCaptcha("starting stealth proxy");
       const { proxyUrl, caCertPath } = await withTimeout(
         stealth.start(),
@@ -313,6 +323,9 @@ export class BrowserSession {
         ).catch(() => {});
       }
       if (this.mintGen !== gen) throw e;
+      if (this.opts.requireStealth) {
+        throw new Error("required stealth proxy unavailable", { cause: e });
+      }
       console.warn(
         `[browser] stealth proxy unavailable (${(e as Error).message}); lightpanda runs unmasked`,
       );

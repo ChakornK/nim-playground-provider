@@ -50,6 +50,7 @@ export const env = {
   model: process.env.MODEL ?? DEFAULT_MODEL,
   host: process.env.HOST ?? "127.0.0.1",
   apiKeys: parseKeys(process.env.API_KEY ?? ""),
+  proxyFile: process.env.PROXY_FILE ?? "PROXIES.txt",
   upstreamConcurrency: Math.max(
     1,
     Math.trunc(num(process.env.UPSTREAM_CONCURRENCY, 1)),

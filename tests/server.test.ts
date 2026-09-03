@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseKeys } from "../src/constants.ts";
+import type {
+  EgressCoordinator,
+  GenerationLease,
+  GenerationOutcome,
+} from "../src/egress.ts";
 import {
   createServer,
   isAuthorized,
@@ -1439,6 +1444,301 @@ describe("stream without finish_reason preserves unrelated warm tokens", () => {
       expect(status).toBe(200);
       expect(body).toContain("data: [DONE]");
       expect(invalidations).toBe(0);
+    } finally {
+      await s.stop(true);
+    }
+  });
+});
+
+describe("route-aware egress integration", () => {
+  interface LeaseStep {
+    routeId: string;
+    tokenError?: Error;
+    chat(params: UpstreamChatParams, call: number): Promise<Response>;
+  }
+
+  const scriptedEgress = (steps: LeaseStep[]) => {
+    const outcomes: Array<{ routeId: string; outcome: GenerationOutcome }> = [];
+    const chats: Array<{ routeId: string; token: string }> = [];
+    let acquisitions = 0;
+    let tokenCalls = 0;
+    let invalidations = 0;
+    let accepting = true;
+    const egress: EgressCoordinator = {
+      proxyMode: true,
+      async acquire() {
+        if (!accepting) throw new Error("closed");
+        const step = steps[acquisitions++];
+        if (!step) throw new Error("no scripted lease");
+        let finished = false;
+        const lease: GenerationLease = {
+          epochId: acquisitions,
+          routeId: step.routeId,
+          routeKind: "proxy",
+          signal: new AbortController().signal,
+          async acquireToken() {
+            tokenCalls++;
+            if (step.tokenError) throw step.tokenError;
+            return `P1_${step.routeId}_${tokenCalls}`;
+          },
+          async chat(params) {
+            chats.push({ routeId: step.routeId, token: params.token });
+            return step.chat(params, chats.length);
+          },
+          async invalidateCaptcha() {
+            invalidations++;
+          },
+          async finish(outcome) {
+            if (finished) return;
+            finished = true;
+            outcomes.push({ routeId: step.routeId, outcome });
+          },
+        };
+        return lease;
+      },
+      beginShutdown() {
+        accepting = false;
+      },
+      async drain() {
+        return true;
+      },
+      async close() {
+        accepting = false;
+      },
+    };
+    return {
+      egress,
+      outcomes,
+      chats,
+      acquisitions: () => acquisitions,
+      tokenCalls: () => tokenCalls,
+      invalidations: () => invalidations,
+    };
+  };
+
+  const postWithEgress = (server: ServerInstance) =>
+    fetch(`${server.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "publisher1/model1",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+
+  test("token and NVIDIA chat use one generation lease", async () => {
+    const scripted = scriptedEgress([
+      {
+        routeId: "route-a",
+        chat: async (params) => upstreamMock().chat(params),
+      },
+    ]);
+    const s = await createServer({ ...deps, egress: scripted.egress });
+    try {
+      expect((await postWithEgress(s)).status).toBe(200);
+      expect(scripted.chats).toEqual([
+        { routeId: "route-a", token: "P1_route-a_1" },
+      ]);
+      expect(scripted.outcomes).toEqual([
+        { routeId: "route-a", outcome: "success" },
+      ]);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("token failure safely rotates before one NVIDIA dispatch", async () => {
+    const scripted = scriptedEgress([
+      {
+        routeId: "route-a",
+        tokenError: new Error("proxy unavailable"),
+        chat: async (params) => upstreamMock().chat(params),
+      },
+      {
+        routeId: "route-b",
+        chat: async (params) => upstreamMock().chat(params),
+      },
+    ]);
+    const s = await createServer({ ...deps, egress: scripted.egress });
+    try {
+      expect((await postWithEgress(s)).status).toBe(200);
+      expect(scripted.acquisitions()).toBe(2);
+      expect(scripted.chats).toHaveLength(1);
+      expect(scripted.chats[0]?.routeId).toBe("route-b");
+      expect(scripted.outcomes).toEqual([
+        { routeId: "route-a", outcome: "pre_dispatch_route_failure" },
+        { routeId: "route-b", outcome: "success" },
+      ]);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("post-dispatch timeout is not replayed on another route", async () => {
+    const scripted = scriptedEgress([
+      {
+        routeId: "route-a",
+        async chat() {
+          throw new UpstreamHeadersTimeoutError(120_000);
+        },
+      },
+      {
+        routeId: "route-b",
+        chat: async (params) => upstreamMock().chat(params),
+      },
+    ]);
+    const s = await createServer({
+      ...deps,
+      egress: scripted.egress,
+      upstreamBackoffMs: 10,
+      upstreamMaxBackoffMs: 10,
+    });
+    try {
+      expect((await postWithEgress(s)).status).toBe(504);
+      expect(scripted.acquisitions()).toBe(1);
+      expect(scripted.chats).toHaveLength(1);
+      expect(scripted.outcomes).toEqual([
+        { routeId: "route-a", outcome: "ambiguous_post_dispatch_failure" },
+      ]);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("provider-global failure does not report a route failure", async () => {
+    const scripted = scriptedEgress([
+      {
+        routeId: "route-a",
+        async chat() {
+          return new Response("service unavailable", { status: 503 });
+        },
+      },
+    ]);
+    const s = await createServer({
+      ...deps,
+      egress: scripted.egress,
+      upstreamBackoffMs: 10,
+      upstreamMaxBackoffMs: 10,
+    });
+    try {
+      expect((await postWithEgress(s)).status).toBe(502);
+      expect(scripted.outcomes).toEqual([
+        { routeId: "route-a", outcome: "provider_global_failure" },
+      ]);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("definitive captcha rejection retries on the same lease once", async () => {
+    const scripted = scriptedEgress([
+      {
+        routeId: "route-a",
+        async chat(params, call) {
+          if (call === 1) {
+            return new Response(
+              '{"requestStatus":{"statusDescription":"Token is invalid"}}',
+              { status: 400 },
+            );
+          }
+          return upstreamMock().chat(params);
+        },
+      },
+    ]);
+    const s = await createServer({ ...deps, egress: scripted.egress });
+    try {
+      expect((await postWithEgress(s)).status).toBe(200);
+      expect(scripted.acquisitions()).toBe(1);
+      expect(scripted.tokenCalls()).toBe(2);
+      expect(scripted.invalidations()).toBe(1);
+      expect(scripted.chats).toHaveLength(2);
+      expect(scripted.outcomes).toEqual([
+        { routeId: "route-a", outcome: "success" },
+      ]);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("shutdown admission gate rejects new completions", async () => {
+    const scripted = scriptedEgress([]);
+    const s = await createServer({ ...deps, egress: scripted.egress });
+    try {
+      s.beginShutdown();
+      const response = await postWithEgress(s);
+      expect(response.status).toBe(503);
+      expect((await response.json()).error.code).toBe("server_shutting_down");
+      expect(scripted.acquisitions()).toBe(0);
+    } finally {
+      await s.stop(true);
+    }
+  });
+
+  test("generation abort terminates a stalled response stream", async () => {
+    const controller = new AbortController();
+    let outcome: GenerationOutcome | undefined;
+    let cancelled = false;
+    const egress: EgressCoordinator = {
+      proxyMode: true,
+      async acquire() {
+        return {
+          epochId: 1,
+          routeId: "route-a",
+          routeKind: "proxy",
+          signal: controller.signal,
+          async acquireToken() {
+            return "P1_route_a";
+          },
+          async chat() {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(streamController) {
+                  streamController.enqueue(
+                    new TextEncoder().encode(
+                      'data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n',
+                    ),
+                  );
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              }),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          },
+          async invalidateCaptcha() {},
+          async finish(value) {
+            outcome = value;
+          },
+        };
+      },
+      beginShutdown() {},
+      async drain() {
+        controller.abort();
+        return false;
+      },
+      async close() {},
+    };
+    const s = await createServer({
+      ...deps,
+      egress,
+      upstreamStreamIdleTimeoutMs: 1_000,
+    });
+    try {
+      const response = await fetch(`${s.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "publisher1/model1",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      await egress.drain(0);
+      await expect(response.text()).resolves.toBeString();
+      expect(cancelled).toBe(true);
+      expect(outcome).toBe("ambiguous_post_dispatch_failure");
     } finally {
       await s.stop(true);
     }

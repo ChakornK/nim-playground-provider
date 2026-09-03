@@ -8,6 +8,7 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { promisify } from "node:util";
 import { USER_AGENT } from "./constants.ts";
+import type { FetchLike } from "./route-fetch.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,6 +69,11 @@ interface CertPair {
   cert: string;
 }
 
+export interface StealthProxyOpts {
+  dir?: string;
+  fetchImpl?: FetchLike;
+}
+
 /**
  * TLS-terminating forward proxy. lightpanda refuses to send a real Chrome UA
  * on the wire (its --user-agent flag forbids "Mozilla" and it always injects
@@ -81,22 +87,25 @@ export class StealthProxy {
   private certs = new Map<string, Promise<CertPair>>();
   private server: net.Server | null = null;
   private sockets = new Set<net.Socket>();
+  private fetchImpl: FetchLike;
   // http.Server requests are fed CONNECted TLS sockets.
   private inner: http.Server;
 
-  constructor(dir?: string) {
+  constructor(opts: StealthProxyOpts | string = {}) {
+    const normalized = typeof opts === "string" ? { dir: opts } : opts;
     this.dir =
-      dir ??
+      normalized.dir ??
       join(
         tmpdir(),
         `stealth-${createHash("sha1").update(String(process.pid)).digest("hex").slice(0, 8)}`,
       );
     this.caCertPath = join(this.dir, "ca.crt");
     this.caKeyPath = join(this.dir, "ca.key");
+    this.fetchImpl = normalized.fetchImpl ?? (fetch as FetchLike);
     this.inner = http.createServer((req, res) => {
-      void this.handleRequest(req, res).catch((error) => {
+      void this.handleRequest(req, res).catch(() => {
         if (process.env.DEBUG_CAPTCHA) {
-          console.error("[captcha-proxy]", req.url, error);
+          console.error("[captcha-proxy] outbound request failed");
         }
         if (!res.headersSent) res.writeHead(502);
         res.end();
@@ -292,7 +301,7 @@ export class StealthProxy {
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
 
-    const upstream = await fetch(target, {
+    const upstream = await this.fetchImpl(target, {
       method: req.method,
       headers,
       body,
@@ -302,7 +311,7 @@ export class StealthProxy {
       console.error(
         "[captcha-proxy]",
         req.method,
-        target,
+        `${url.origin}${url.pathname}`,
         upstream.status,
         upstream.headers.get("content-encoding") ?? "identity",
       );

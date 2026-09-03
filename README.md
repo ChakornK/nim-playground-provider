@@ -57,6 +57,7 @@ All settings use environment variables. None are required.
 | `LIGHTPANDA_PATH`             | (auto-detected)      | Path to the Lightpanda binary, overrides PATH detection            |
 | `MODEL`                       | `moonshotai/kimi-k3` | Fallback model name                                                |
 | `API_KEY`                     | (unset)              | Comma-separated bearer keys; empty or unset disables auth          |
+| `PROXY_FILE`                  | `PROXIES.txt`        | Optional startup-loaded HTTP/SOCKS proxy list                      |
 | `UPSTREAM_CONCURRENCY`        | `1`                  | Maximum simultaneous NVIDIA generations                           |
 | `UPSTREAM_MIN_INTERVAL_MS`    | `15000`              | Minimum delay between NVIDIA request starts                        |
 | `UPSTREAM_BACKOFF_MS`         | `120000`             | Initial cooldown after an upstream failure                         |
@@ -64,6 +65,36 @@ All settings use environment variables. None are required.
 | `UPSTREAM_HEADERS_TIMEOUT_MS` | `120000`             | Maximum wait for NVIDIA to begin a response                        |
 | `UPSTREAM_BODY_TIMEOUT_MS`    | `120000`             | Maximum wait for a non-streaming NVIDIA response body              |
 | `UPSTREAM_STREAM_IDLE_TIMEOUT_MS` | `120000`         | Maximum idle time between NVIDIA stream frames                     |
+
+## Optional proxy rotation
+
+Create `PROXIES.txt` in the working directory to enable failure-driven egress rotation. The file is intentionally excluded from Git and Docker build contexts. It is read once at startup; restart the service after editing it.
+
+```text
+# One unauthenticated, globally routable IP endpoint per line
+http://204.13.164.127:3128
+socks4://1.2.3.4:1080
+socks5://5.6.7.8:1080
+```
+
+Only `http://`, `socks4://`, and `socks5://` URLs with public IPv4 or bracketed IPv6 literals are accepted. Credentials, hostnames, private addresses, paths, queries, and fragments are rejected. Invalid entries are reported by line number and reason without logging their contents.
+
+The service keeps a healthy proxy active and rotates only after a proxy-attributable failure. hCaptcha minting and the matching NVIDIA request share one route epoch, including one browser and token pool. Failures before NVIDIA dispatch can try another route, but timeouts or incomplete responses after dispatch are never replayed. When all external routes are cooling, the service temporarily uses direct egress and returns to a proxy after one becomes eligible.
+
+Proxy mode requires `UPSTREAM_CONCURRENCY=1`; startup fails before Lightpanda or the API listener starts when the value is higher. The normal request-start pacing remains active across route changes. NVIDIA-wide failures still open a provider cooldown instead of burning through every proxy.
+
+A proxy URL identifies an endpoint, not a guaranteed public exit. Use endpoints that retain one stable egress IP across connections and destinations. Public proxies can log your source IP, destination hosts, timing, and traffic volume. Target TLS verification remains enabled, but public proxies are still unsuitable for secrets or production workloads.
+
+For Docker, mount the file read-only instead of adding it to the image:
+
+```bash
+docker run --rm \
+  -v "$(pwd)/PROXIES.txt:/app/PROXIES.txt:ro" \
+  -p 8787:8787 \
+  ghcr.io/chakornk/nim-playground-provider
+```
+
+Use `PROXY_FILE=/path/in/container.txt` when mounting at a different path.
 
 ## Authentication
 
