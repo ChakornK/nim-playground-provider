@@ -19,6 +19,8 @@ export interface CatalogEntry {
   ownedBy: string;
   /** Params the model accepts, from its OpenAPI spec. Undefined = unknown, send all. */
   params?: string[];
+  /** Advertised reasoning_effort values, ordered as published by the model. */
+  reasoningEfforts?: string[];
 }
 
 export interface ModelRoute {
@@ -26,6 +28,8 @@ export interface ModelRoute {
   functionId: string;
   /** Params accepted by the deployed model, when its spec is available. */
   params?: string[];
+  /** Advertised reasoning_effort values, ordered as published by the model. */
+  reasoningEfforts?: string[];
 }
 
 export interface ChatRequest {
@@ -91,6 +95,8 @@ export interface UpstreamChatParams {
   route: { modelId: string; functionId: string };
   /** Params the model accepts; unsupported ones are dropped before sending. */
   allowedParams?: string[];
+  /** Advertised reasoning_effort values used to map enable_thinking. */
+  reasoningEfforts?: string[];
   /** Cancels the upstream request when the downstream client disconnects. */
   signal?: AbortSignal;
   /** Runs synchronously immediately before the NVIDIA fetch begins. */

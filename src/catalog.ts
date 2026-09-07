@@ -39,10 +39,17 @@ interface EndpointSpec {
   openAPISpec?: string;
 }
 
-/** Param names the model's chat endpoint accepts, per its OpenAPI spec.
- * Undefined when the spec is missing or unparseable (send everything). */
-export function specParams(openAPISpec?: string): string[] | undefined {
-  if (!openAPISpec) return undefined;
+export interface SpecCapabilities {
+  /** Param names accepted by the model's chat endpoint. */
+  params?: string[];
+  /** Advertised values for the reasoning_effort request field. */
+  reasoningEfforts?: string[];
+}
+
+/** Read request capabilities from a model's OpenAPI spec.
+ * Missing or unparseable specs leave the capabilities unknown. */
+export function specCapabilities(openAPISpec?: string): SpecCapabilities {
+  if (!openAPISpec) return {};
   try {
     const doc = JSON.parse(openAPISpec) as {
       paths?: Record<
@@ -74,10 +81,32 @@ export function specParams(openAPISpec?: string): string[] | undefined {
     const props = (
       schema as { properties?: Record<string, unknown> } | undefined
     )?.properties;
-    return props ? Object.keys(props) : undefined;
+    if (!props) return {};
+    const reasoning = props.reasoning_effort as
+      | { enum?: unknown[] }
+      | undefined;
+    const reasoningEfforts = Array.isArray(reasoning?.enum)
+      ? [
+          ...new Set(
+            reasoning.enum.filter(
+              (value): value is string =>
+                typeof value === "string" && value.length > 0,
+            ),
+          ),
+        ]
+      : [];
+    return {
+      params: Object.keys(props),
+      ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** Param names the model's chat endpoint accepts, when known. */
+export function specParams(openAPISpec?: string): string[] | undefined {
+  return specCapabilities(openAPISpec).params;
 }
 
 export interface EndpointCandidate {
@@ -130,6 +159,7 @@ async function fetchSpec(
   namespace: string;
   functionId: string;
   params?: string[];
+  reasoningEfforts?: string[];
 } | null> {
   try {
     const r = await fetchImpl(`${ENDPOINTS_BASE}/${orgName}/${name}/spec`, {
@@ -138,11 +168,17 @@ async function fetchSpec(
     });
     if (!r.ok) return null;
     const spec = (await r.json()) as EndpointSpec;
-    if (!spec.namespace || !spec.nvcfFunctionId) return null;
+    if (
+      !spec.namespace ||
+      !spec.nvcfFunctionId ||
+      spec.nvcfFunctionId === "None"
+    ) {
+      return null;
+    }
     return {
       namespace: spec.namespace,
       functionId: spec.nvcfFunctionId,
-      params: specParams(spec.openAPISpec),
+      ...specCapabilities(spec.openAPISpec),
     };
   } catch {
     return null;
@@ -180,6 +216,9 @@ export async function resolveModelRoute(
       modelId: `${spec.namespace}/${artifact.name}`,
       functionId: spec.functionId,
       ...(spec.params ? { params: spec.params } : {}),
+      ...(spec.reasoningEfforts
+        ? { reasoningEfforts: spec.reasoningEfforts }
+        : {}),
     };
   } catch {
     return null;
@@ -271,6 +310,7 @@ export async function buildCatalog(opts?: {
         created: m.created,
         ownedBy: m.ownedBy,
         params: spec.params,
+        reasoningEfforts: spec.reasoningEfforts,
       } as CatalogEntry;
     },
   );

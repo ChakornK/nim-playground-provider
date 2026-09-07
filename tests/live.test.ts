@@ -185,7 +185,7 @@ test.skipIf(!PROXY_LIVE)(
           messages: [{ role: "user", content: "reply exactly: OK" }],
           stream: false,
           enable_thinking: false,
-          max_tokens: 16,
+          max_tokens: 128,
           top_p: 1,
         }),
       });
@@ -241,7 +241,7 @@ test.skipIf(!LIVE)(
           messages: [{ role: "user", content: "reply exactly: OK" }],
           stream: false,
           enable_thinking: false,
-          max_tokens: 16,
+          max_tokens: 128,
           top_p: 1,
         }),
       });

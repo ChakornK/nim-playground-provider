@@ -118,6 +118,7 @@ const deriveDefaultRoute = (): ModelRoute | undefined => {
         modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
         functionId: entry.functionId,
         params: entry.params,
+        reasoningEfforts: entry.reasoningEfforts,
       }
     : undefined;
 };

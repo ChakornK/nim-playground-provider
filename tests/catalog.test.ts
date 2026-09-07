@@ -5,6 +5,7 @@ import {
   endpointCandidates,
   resolveModelRoute,
   slugCandidates,
+  specCapabilities,
   specParams,
 } from "../src/catalog.ts";
 
@@ -26,6 +27,24 @@ function artifact(o: {
 
 const SPEC_BASE = "https://api.ngc.nvidia.com/v2/endpoints";
 
+const chatSpec = (properties: Record<string, unknown>) =>
+  JSON.stringify({
+    paths: {
+      "/chat/completions": {
+        post: {
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ChatRequest" },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: { schemas: { ChatRequest: { properties } } },
+  });
+
 test("slugCandidates tries the bare name then dots->underscores (deduped)", () => {
   expect(slugCandidates("publisher2/model-1.0")).toEqual([
     "model-1.0",
@@ -40,33 +59,22 @@ test("slugCandidates tries the bare name then dots->underscores (deduped)", () =
 });
 
 test("specParams extracts chat request params from the OpenAPI spec", () => {
-  const openAPISpec = JSON.stringify({
-    paths: {
-      "/chat/completions": {
-        post: {
-          requestBody: {
-            content: {
-              "application/json": {
-                schema: { $ref: "#/components/schemas/ChatRequest" },
-              },
-            },
-          },
-        },
-      },
-    },
-    components: {
-      schemas: {
-        ChatRequest: {
-          properties: { messages: {}, temperature: {}, stream: {} },
-        },
-      },
-    },
+  const openAPISpec = chatSpec({
+    messages: {},
+    temperature: {},
+    stream: {},
+    reasoning_effort: { enum: ["low", "high", "max", "high", null] },
   });
   expect(specParams(openAPISpec)).toEqual([
     "messages",
     "temperature",
     "stream",
+    "reasoning_effort",
   ]);
+  expect(specCapabilities(openAPISpec)).toEqual({
+    params: ["messages", "temperature", "stream", "reasoning_effort"],
+    reasoningEfforts: ["low", "high", "max"],
+  });
   // inline schema (no $ref)
   expect(
     specParams(
@@ -166,10 +174,13 @@ test("buildCatalog keeps models with a deployment spec and drops the rest", asyn
         { status: 200 },
       );
     if (u === `${SPEC_BASE}/test-namespace/undeployed/spec`)
-      // spec without nvcfFunctionId -> undeployed, dropped
-      return new Response(JSON.stringify({ namespace: "test-namespace" }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({
+          namespace: "test-namespace",
+          nvcfFunctionId: "None",
+        }),
+        { status: 200 },
+      );
     return new Response("not found", { status: 404 });
   };
 
@@ -216,6 +227,11 @@ test("resolveModelRoute matches the endpoint by name and reads its spec", async 
         JSON.stringify({
           namespace: "test-namespace",
           nvcfFunctionId: "model-1-fn",
+          openAPISpec: chatSpec({
+            messages: {},
+            model: {},
+            reasoning_effort: { enum: ["none", "high", "max"] },
+          }),
         }),
         { status: 200 },
       );
@@ -224,6 +240,8 @@ test("resolveModelRoute matches the endpoint by name and reads its spec", async 
   expect(await resolveModelRoute("publisher2/model-1.0", fetchImpl)).toEqual({
     modelId: "test-namespace/model-1.0",
     functionId: "model-1-fn",
+    params: ["messages", "model", "reasoning_effort"],
+    reasoningEfforts: ["none", "high", "max"],
   });
 });
 

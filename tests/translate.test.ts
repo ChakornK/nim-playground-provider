@@ -47,6 +47,42 @@ test("body builder leaves omitted sampling params to model defaults", () => {
   expect(body).not.toHaveProperty("max_tokens");
 });
 
+test("body builder maps enable_thinking to advertised reasoning effort", () => {
+  const base = {
+    model: "moonshotai/kimi-k3",
+    messages: [{ role: "user", content: "hi" }],
+    stream: false,
+    allowedParams: ["messages", "model", "stream", "reasoning_effort"],
+    reasoningEfforts: ["low", "high", "max"],
+  };
+  const enabled = buildUpstreamBody({ ...base, enableThinking: true });
+  expect(enabled).toHaveProperty("reasoning_effort", "max");
+  expect(enabled).not.toHaveProperty("chat_template_kwargs");
+
+  const disabled = buildUpstreamBody({ ...base, enableThinking: false });
+  expect(disabled).toHaveProperty("reasoning_effort", "low");
+  expect(disabled).not.toHaveProperty("chat_template_kwargs");
+
+  const supportsNone = buildUpstreamBody({
+    ...base,
+    enableThinking: false,
+    reasoningEfforts: ["none", "high", "max"],
+  });
+  expect(supportsNone).toHaveProperty("reasoning_effort", "none");
+});
+
+test("body builder omits unknown reasoning controls from strict schemas", () => {
+  const body = buildUpstreamBody({
+    model: "publisher1/model1",
+    messages: [{ role: "user", content: "hi" }],
+    enableThinking: true,
+    stream: false,
+    allowedParams: ["messages", "model", "stream", "reasoning_effort"],
+  });
+  expect(body).not.toHaveProperty("reasoning_effort");
+  expect(body).not.toHaveProperty("chat_template_kwargs");
+});
+
 test("body builder omits stream_options when stream=false", () => {
   const body = buildUpstreamBody({
     model: "publisher1/model1",

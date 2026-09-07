@@ -111,7 +111,7 @@ curl -H "Authorization: Bearer secret1" http://localhost:8787/v1/chat/completion
 
 ### `POST /v1/chat/completions`
 
-Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. `enable_thinking` (default `true`) toggles reasoning mode. The proxy doesn't support `reasoning.effort`.
+Accepts standard OpenAI chat fields: `model`, `messages`, `stream`, `temperature`, `top_p`, `max_tokens`, `tools`. `enable_thinking` (default `true`) selects the strongest reasoning effort advertised by the model; `false` selects `none` when available, otherwise the lowest advertised effort. Kimi K3 advertises `low`, `high`, and `max`, so it cannot disable reasoning completely. Legacy models with a native thinking toggle still receive that boolean. The proxy doesn't support `reasoning.effort`.
 
 Request a model outside the `GET /v1/models` list and you get a 404. The default model (the `MODEL` variable) keeps working even when the model list fails to load.
 

@@ -321,6 +321,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
           modelId: `${entry.namespace ?? NAMESPACE}/${entry.slug}`,
           functionId: entry.functionId,
           params: entry.params,
+          reasoningEfforts: entry.reasoningEfforts,
         }
       : fallbackRoute;
     if (!route) {
@@ -500,6 +501,7 @@ export async function createServer(deps: ServerDeps): Promise<ServerInstance> {
             stream,
             tools: body.tools,
             allowedParams: route.params,
+            reasoningEfforts: route.reasoningEfforts,
             signal: req.signal,
             onDispatch: () => {
               mayHaveDispatched = true;

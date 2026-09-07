@@ -182,7 +182,7 @@ test("no route available returns 503 without consuming a token", async () => {
   }
 });
 
-test("fallback route constraints filter explicit Kimi sampling params", async () => {
+test("fallback route applies current Kimi request capabilities", async () => {
   let upstreamBody: Record<string, unknown> | undefined;
   const upstream = new Upstream({
     fetchImpl: (async (_url, init) => {
@@ -204,7 +204,8 @@ test("fallback route constraints filter explicit Kimi sampling params", async ()
     defaultRoute: {
       modelId: "namespace/kimi-k3",
       functionId: "function-id",
-      params: ["messages", "model", "stream", "max_tokens"],
+      params: ["messages", "model", "stream", "max_tokens", "reasoning_effort"],
+      reasoningEfforts: ["low", "high", "max"],
     },
     upstream,
   });
@@ -215,10 +216,13 @@ test("fallback route constraints filter explicit Kimi sampling params", async ()
       body: JSON.stringify({
         messages: [{ role: "user", content: "hi" }],
         top_p: 1,
+        enable_thinking: false,
       }),
     });
     expect(r.status).toBe(200);
     expect(upstreamBody).not.toHaveProperty("top_p");
+    expect(upstreamBody).not.toHaveProperty("chat_template_kwargs");
+    expect(upstreamBody).toHaveProperty("reasoning_effort", "low");
   } finally {
     await s.stop(true);
   }

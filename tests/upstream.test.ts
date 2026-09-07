@@ -5,6 +5,7 @@ import {
   Upstream,
   UpstreamBodyTimeoutError,
   UpstreamHeadersTimeoutError,
+  upstreamUrl,
 } from "../src/upstream.ts";
 
 const params = (signal?: AbortSignal): UpstreamChatParams => ({
@@ -15,6 +16,12 @@ const params = (signal?: AbortSignal): UpstreamChatParams => ({
   enableThinking: false,
   stream: false,
   signal,
+});
+
+test("upstream uses the active NVIDIA playground host", () => {
+  expect(upstreamUrl("namespace/kimi-k3")).toBe(
+    "https://buildapi.ngc.nvidia.com/v2/predict/models/namespace/kimi-k3",
+  );
 });
 
 const abortableFetch = ((_url: string | URL | Request, init?: RequestInit) =>

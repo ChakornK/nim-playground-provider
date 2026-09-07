@@ -102,6 +102,32 @@ export async function readJsonBody(
   return JSON.parse(await readTextBody(response, opts)) as unknown;
 }
 
+const REASONING_EFFORT_ORDER = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "max",
+] as const;
+
+function selectReasoningEffort(
+  efforts: string[],
+  enableThinking: boolean,
+): string | undefined {
+  const byName = new Map(
+    efforts.map((effort) => [effort.toLowerCase(), effort]),
+  );
+  const preferences = enableThinking
+    ? [...REASONING_EFFORT_ORDER].reverse()
+    : REASONING_EFFORT_ORDER;
+  for (const preference of preferences) {
+    const effort = byName.get(preference);
+    if (effort) return effort;
+  }
+  return efforts[enableThinking ? efforts.length - 1 : 0];
+}
+
 export function buildUpstreamBody(params: {
   model: string;
   messages: OpenAIMessage[];
@@ -113,6 +139,8 @@ export function buildUpstreamBody(params: {
   tools?: unknown[];
   /** Params the model accepts; others are dropped. Undefined = allow all. */
   allowedParams?: string[];
+  /** Advertised reasoning_effort values used to map enableThinking. */
+  reasoningEfforts?: string[];
 }) {
   const allowed = (key: string) =>
     !params.allowedParams || params.allowedParams.includes(key);
@@ -137,12 +165,24 @@ export function buildUpstreamBody(params: {
       `[upstream] ${params.model}: dropping unsupported params: ${dropped.join(", ")}`,
     );
   }
+  const reasoningEffort =
+    params.reasoningEfforts && allowed("reasoning_effort")
+      ? selectReasoningEffort(params.reasoningEfforts, params.enableThinking)
+      : undefined;
+  const useLegacyThinking =
+    reasoningEffort === undefined && allowed("chat_template_kwargs");
   return {
     stream: params.stream,
-    chat_template_kwargs: {
-      enable_thinking: params.enableThinking,
-      clear_thinking: false,
-    },
+    ...(reasoningEffort
+      ? { reasoning_effort: reasoningEffort }
+      : useLegacyThinking
+        ? {
+            chat_template_kwargs: {
+              enable_thinking: params.enableThinking,
+              clear_thinking: false,
+            },
+          }
+        : {}),
     model: params.model,
     ...(params.temperature !== undefined && allowed("temperature")
       ? { temperature: params.temperature }
@@ -185,6 +225,7 @@ export class Upstream {
       stream: params.stream,
       tools: params.tools,
       allowedParams: params.allowedParams,
+      reasoningEfforts: params.reasoningEfforts,
     });
 
     const ctrl = new AbortController();
